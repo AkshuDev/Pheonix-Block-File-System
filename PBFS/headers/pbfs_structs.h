@@ -6,33 +6,28 @@
 #include <unitypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "pbfs.h"
 
-struct PBFS_Header {
+typedef struct {
     char Magic[6]; // PBFS\x00\x00
     uint32_t Block_Size; // 512 bytes
     uint32_t Total_Blocks;  // 2048 blocks
     char Disk_Name[24]; // Just the name of the disk
-    uint32_t Timestamp_part1; // Total = 8 bytes but for compatibility with 32-bit cpu
-    uint32_t Timestamp_part2; // Part 2
+    uint64_t Timestamp; // Timestamp
     uint32_t Version; // Version
-    uint32_t First_Boot_Timestamp_Part1; // Total = 8 bytes but for compatibility with 32-bit cpu, also optional
-    uint32_t First_Boot_Timestamp_Part2; // Part 2
+    uint64_t First_Boot_Timestamp; // First boot timestamp
     uint16_t OS_BootMode; // Again optional but there for furture use!
     uint32_t FileTableOffset; // Offset of the file table
     uint32_t Entries; // Number of entries in the file table
-}; // Total = 68 bytes
+} __attribute__((packed)) PBFS_Header; // Total = 68 bytes
 
-struct PBFS_FileTableEntry {
+typedef struct {
     char Name[128]; // Name of the file
-    uint32_t File_Offset_Part1; // Total = 16 bytes but for compatibility with 32-bit cpu
-    uint32_t File_Offset_Part2; // Part 2
-    uint32_t File_Offset_Part3; // Part 3
-    uint32_t File_Offset_Part4; // Part 4
-    uint32_t File_Data_Block_Span_Part1; // Total = 8 bytes but for compatibility with 32-bit cpu
-    uint32_t File_Data_Block_Span_Part2; // Part 2
-}; // Total = 156 bytes
+    uint128_t File_Data_Offset; // File data offset
+    uint128_t Block_Span; // File Block Span
+} __attribute__((packed)) PBFS_FileTableEntry; // Total = 164 bytes
 
-struct PBFS_PermisssionTableEntry {
+typedef struct {
     uint16_t Read; // Read Permission
     uint16_t Write; // Write Permission
     uint16_t Executable; // Executable Permission
@@ -42,12 +37,22 @@ struct PBFS_PermisssionTableEntry {
     uint16_t Delete; // Delete Permission
     uint16_t Special_Access; // Special Access
     uint32_t File_Tree_Offset; // Offset of the file tree
-}; // Total = 16 bytes
+} __attribute__((packed)) PBFS_PermisssionTableEntry; // Total = 16 bytes
 
-struct PBFS_FileTreeEntry {
+typedef struct {
     char Name[128]; // Name of the file
-}; // Total = 128 bytes
+} __attribute__((packed)) PBFS_FileTreeEntry; // Total = 128 bytes
 
-// total size of all structs combined = 372
+// total size of all structs combined = 380 bytes
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t size;
+    uint8_t reserved;
+    uint16_t sector_count;
+    uint16_t offset;
+    uint16_t segment;
+    uint64_t lba;
+} __attribute__((packed)) PBFS_DAP;
+#pragma pack(pop)
 
 #endif
