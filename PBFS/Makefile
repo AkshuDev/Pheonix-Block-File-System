@@ -14,7 +14,7 @@ tool_disk_io_o := $(Cdir)/build-fs/disk_io.o
 tool_disk_params_o := $(Cdir)/build-fs/disk_params.o
 
 tool_disk_io := $(Cdir)/tools/disk_io.asm
-tool_disk_params := $(Cdir)/tools/disk_params.S
+tool_disk_params := $(Cdir)/tools/disk_params.asm
 
 OBJS := $(tool_disk_io_o) $(tool_disk_params_o)
 
@@ -25,6 +25,7 @@ LD := ld
 LDFLAGS := -nostdlib
 
 ASM := nasm
+ASMFLAGS := -f win64
 
 
 TARGET := $(BuildDir)/pbfs
@@ -40,17 +41,17 @@ $(BuildDir):
 
 # Assemble
 $(tool_disk_io_o): $(tool_disk_io)
-	$(ASM) -c $< -o $@
+	$(ASM) $(ASMFLAGS) $< -o $@
 
 $(tool_disk_params_o): $(tool_disk_params)
-	$(CC) -c $< -o $@
+	$(ASM) $(ASMFLAGS) $< -o $@
 
 $(pbfs_main_fs_out): $(pbfs_main_fs)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $< -o $@
 
 # Link and build
 $(TARGET): $(OBJS)
-	$(LD) $(LDFLAGS) $@ $^
+	$(LD) $(LDFLAGS) $^ -o $@
 
 # Clean
 clean:
