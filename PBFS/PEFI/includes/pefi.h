@@ -27,8 +27,14 @@ typedef unsigned char BOOLEAN;
 
 typedef UINTN EFI_TPL;
 
+typedef uint64_t EFI_LBA;
+
+typedef UINTN RETURN_STATUS;
+
 
 #define EFIAPI
+
+#define uefi_call_wrapper(func, va_num, ...) func(__VA_ARGS__)
 
 #define MAX_BIT 0x8000000000000000ULL
 #define MAX_2_BITS 0xC000000000000000ULL
@@ -50,6 +56,12 @@ typedef UINTN EFI_TPL;
 #define IN OUT
 #define OPTIONAL
 #define CONST const
+#define FALSE 0
+
+#define EFI_ERROR(Status) (((INTN)(Status)) < 0)
+#define ENCODE_ERROR	(StatusCode)((RETURN_STATUS)(MAX_BIT | (StatusCode)))
+#define RETURN_ACCESS_DENIED   ENCODE_ERROR (15)
+#define EFI_ACCESS_DENIED   RETURN_ACCESS_DENIED
 
 #ifdef _MSC_VER
   #define PEFI_PACKED_STRUCT(decl) __pragma(pack(push, 1)) decl __pragma(pack(pop))

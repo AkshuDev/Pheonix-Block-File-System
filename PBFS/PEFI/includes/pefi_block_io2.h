@@ -1,0 +1,29 @@
+#pragma once
+
+#include <pefi.h>
+#include <pefi_media.h>
+
+#define EFI_BLOCK_IO2_PROTOCOL_GUID { \
+    0xa77b2472, 0xe282, 0x4e9f, {0xa2, 0x45, 0xc2, 0xc0, 0xe2, 0x7b, 0xbc, 0xc1} \
+    }
+
+typedef struct EFI_BLOCK_IO2_PROTOCOL EFI_BLOCK_IO2_PROTOCOL;
+
+PEFI_PACKED_STRUCT(typedef struct {
+    EFI_EVENT Event;
+    EFI_STATUS Status;
+} EFI_BLOCK_IO2_TOKEN;)
+
+typedef EFI_STATUS(EFIAPI * EFI_BLOCK_RESET_EX) (IN EFI_BLOCK_IO2_PROTOCOL *This, IN BOOLEAN ExtendedVerification);
+typedef EFI_STATUS(EFIAPI * EFI_BLOCK_READ_EX) (IN EFI_BLOCK_IO2_PROTOCOL *This, IN UINT32 MediaId, IN EFI_LBA LBA, IN OUT EFI_BLOCK_IO2_TOKEN *Token, IN UINTN BufferSize, OUT VOID *Buffer);
+typedef EFI_STATUS(EFIAPI * EFI_BLOCK_WRITE_EX) (IN EFI_BLOCK_IO2_PROTOCOL *This, IN UINT32 MediaId, IN EFI_LBA LBA, IN OUT EFI_BLOCK_IO2_TOKEN *Token, IN UINTN BufferSize, IN VOID *Buffer);
+typedef EFI_STATUS(EFIAPI * EFI_BLOCK_FLUSH_EX) (IN EFI_BLOCK_IO2_PROTOCOL *This, IN OUT EFI_BLOCK_IO2_TOKEN *Token);
+
+
+typedef struct EFI_BLOCK_IO2_PROTOCOL {
+    EFI_BLOCK_IO_MEDIA* Media;
+    EFI_BLOCK_RESET_EX Reset;
+    EFI_BLOCK_READ_EX ReadBlocksEx;
+    EFI_BLOCK_WRITE_EX WriteBlocksEx;
+    EFI_BLOCK_FLUSH_EX FlushBlocksEx;
+};

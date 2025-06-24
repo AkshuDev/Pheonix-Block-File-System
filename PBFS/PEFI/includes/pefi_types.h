@@ -23,6 +23,15 @@ PEFI_PACKED_STRUCT(typedef struct {
 
 /* Boot Services */
 #include <pefi_bootservices.h>
+extern EFI_BOOT_SERVICES *gBS;
+extern EFI_GUID gEfiBlockIoProtocolGuid;
+
+/* Media */
+#include <pefi_media.h>
+
+/* Block IO */
+#include <pefi_block_io.h>
+#include <pefi_block_io2.h>
 
 /* UEFI System Table */
 typedef struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL EFI_SIMPLE_TEXT_INPUT;

@@ -11,14 +11,14 @@
 #pragma pack(push, 1)
 typedef struct {
     char Magic[6]; // PBFS\x00\x00
-    uint32_t Block_Size; // 512 bytes
-    uint32_t Total_Blocks;  // 2048 blocks
-    char Disk_Name[24]; // Just the name of the disk
+    uint32_t Block_Size; // 512 bytes by default (BIOS BLOCK SIZE)
+    uint32_t Total_Blocks;  // 2048 blocks for 1MB
+    char Disk_Name[24]; // Just the name of the disk for the os
     uint64_t Timestamp; // Timestamp
     uint32_t Version; // Version
     uint64_t First_Boot_Timestamp; // First boot timestamp
     uint16_t OS_BootMode; // Again optional but there for furture use!
-    uint32_t FileTableOffset; // Offset of the file table
+    uint32_t FileTableOffset; // Offset of the file table (first data block)
     uint32_t Entries; // Number of entries in the file table
 } __attribute__((packed)) PBFS_Header; // Total = 68 bytes
 #pragma pack(pop)
@@ -48,8 +48,8 @@ typedef struct {
 
 #pragma pack(push, 1)
 typedef struct {
-    char Name[128]; // Name of the file
-} __attribute__((packed)) PBFS_FileTreeEntry; // Total = 128 bytes
+    char Name[20]; // Name of the file (unique id is also accepted, it is 20 bytes because the file paths are not used here but rather the unique id is used).
+} __attribute__((packed)) PBFS_FileTreeEntry; // Total = 20 bytes
 #pragma pack(pop)
 
 // total size of all structs combined = 392 bytes
@@ -83,15 +83,6 @@ typedef struct {
     uint64_t Header_Start;
     uint64_t Header_End;
     uint64_t Header_BlockSpan;
-    uint64_t FileTable_Start;
-    uint64_t FileTable_End;
-    uint64_t FileTable_BlockSpan;
-    uint64_t PermissionTable_Start;
-    uint64_t PermissionTable_End;
-    uint64_t PermissionTable_BlockSpan;
-    uint64_t FileTree_Start;
-    uint64_t FileTree_End;
-    uint64_t FileTree_BlockSpan;
     uint64_t Bitmap_Start;
     uint64_t Bitmap_BlockSpan;
     uint64_t Bitmap_End;
@@ -111,5 +102,10 @@ typedef struct {
     uint8_t  reserved[6];       // 0x1A - reserved
 } __attribute__((packed)) DriveParameters;
 #pragma pack(pop)
+
+typedef struct {
+    char* name;
+    uint32_t lba;
+} PBFS_FileListEntry;
 
 #endif

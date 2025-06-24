@@ -1,10 +1,24 @@
-#include "pbfs-cli.h"
+#include "pbfs.h"
 #include "pbfs_structs.h"
+#include "disk_utils.h"
 
 int block_size = 512; // The size of a single block in bytes
 int total_blocks = 2048; // Total number of blocks
 int disk_size = 512 * 2048;
 char disk_name[24] = "PBFS_DISK\0\0";
+
+// Verifies the memory header/end
+int pbfs_verify_mem_header(char* header, int mode){
+    // Mode = 0 -> check mem start header
+    // Mode = 1 -> check mem end header
+    if (mode != 0 && mode != 1) return InvalidHeader;
+
+    if (mode == 0) {
+        return (strncmp(header, MEM_MAGIC, MEM_MAGIC_LEN) == 0) ? EXIT_SUCCESS : InvalidHeader;
+    }
+
+    return (strncmp(header, MEM_END_MAGIC, MEM_END_MAGIC_LEN) == 0) ? EXIT_SUCCESS : InvalidHeader;
+}
 
 // Verifies the header
 int pbfs_verify_header(PBFS_Header* header) {
@@ -37,26 +51,6 @@ int pbfs_format(const char* image) {
 
     header->FileTableOffset = 2 * block_size;
     header->Entries = 0;
-
-    // Write layout info
-    PBFS_Layout layout = {
-        .Header_Start = 1,
-        .Header_End = 1,
-        .Header_BlockSpan = 1,
-        .FileTable_Start = 2,
-        .FileTable_BlockSpan = 1,
-        .FileTable_End = 2,
-        .PermissionTable_Start = 3,
-        .PermissionTable_BlockSpan = 1,
-        .PermissionTable_End = 3,
-        .FileTree_Start = 4,
-        .FileTable_BlockSpan = 4,
-        .FileTree_End = 4,
-        .Bitmap_Start = 5,
-        .Bitmap_BlockSpan = 1,
-        .Bitmap_End = 5,
-        .Data_Start = 10 // Allocate 5 blocks for ease of use.
-    }; // Just there for testing
 
     memcpy(disk + (block_size * 1), &header, sizeof(PBFS_Header));
     // Write File Table now
@@ -96,48 +90,6 @@ int pbfs_create(const char* image) {
     return EXIT_SUCCESS;
 }
 
-// Adds a file to the image
-int pbfs_add_file(const char* image, const char* filename, const char* datapath, PBFS_Permissions* permissions, char** permission_granted_files) {
-    // Step 1. Verify header
-    // Step 2. Read the file table and append the entry
-    // Step 3. Read the permission table and append the entry
-    // Step 4. Read the file tree and append the entry (if granted files are null that means all files are granted hence just append ~.)
-    // Step 5. Read the bitmap and append the entry
-    // Step 6. Read the data and append the entry
-
-    // Open file
-    FILE* fp = fopen(datapath, "rb");
-    if (!fp) return FileError;
-
-    // Verify header
-    PBFS_Header header;
-    fread(&header, sizeof(PBFS_Header), 1, fp);
-    if (pbfs_verify_header(&header) != EXIT_SUCCESS) return InvalidHeader;
-
-    // Read file table
-    PBFS_FileTableEntry** file_table = calloc(header.Entries, sizeof(PBFS_FileTableEntry*));
-    if (!file_table) return AllocFailed;
-
-    for (int i = 0; i < header.Entries; i++) {
-        fread(file_table[i], sizeof(PBFS_FileTableEntry), 1, fp);
-    }
-
-    // Read permission table
-    PBFS_PermissionTableEntry** permission_table = calloc(header.Entries, sizeof(PBFS_PermissionTableEntry*));
-    if (!permission_table) return AllocFailed;
-
-    for (int i = 0; i < header.Entries; i++) {
-        fread(permission_table[i], sizeof(PBFS_PermissionTableEntry), 1, fp);
-    }
-
-    // Read file tree
-    PBFS_FileTreeEntry** file_tree = calloc(header.Entries, sizeof(PBFS_FileTreeEntry*));
-    if (!file_tree) return AllocFailed;
-
-    for (int i = 0; i < header.Entries; i++) {
-        fread(file_tree[i], sizeof(PBFS_FileTreeEntry), 1, fp);
-    }
-}
 
 // Main function
 int main(int argc, char** argv) {
@@ -213,7 +165,7 @@ int main(int argc, char** argv) {
         }
     }
     if (add_file) {
-        int out = pbfs_add_file(image, filename, filepath, permissions, permission_granted_files);
+        int out = PBFS_WRITE(filename, filepath, permissions, permission_granted_files, 1, 0x80);
 
         if (out != EXIT_SUCCESS) {
             perror("An Error Occurred!\n");

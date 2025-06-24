@@ -9,9 +9,10 @@
 #include <string.h>
 #include <time.h>
 
-#define BLOCK_SIZE 512 // Bytes
-#define MAX_BLOCKS 2048 // 1 MB
-#define MAX_FILES 1024 // Half of max block size
+#define MEM_MAGIC "PBFS\0\0"
+#define MEM_END_MAGIC "PBFS_END\0\0"
+#define MEM_MAGIC_LEN 6
+#define MEM_END_MAGIC_LEN 10
 
 #pragma pack(push, 1)
 typedef struct {

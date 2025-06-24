@@ -19,6 +19,10 @@ uint64_t Permission_Block_Count = 1;
 
 PBFS_Layout layout;
 
+PBFS_FileListEntry* file_list = NULL;     // pointer to array of PBFS_FileListEntry* (filenames)
+size_t file_list_size = 0;   // number of valid entries
+size_t file_list_capacity = 0;  // how many slots are allocated
+
 // Asm imports
 extern uint16_t CALLCONV get_drive_params_real_asm(uint16_t buffer_seg_offset, uint8_t drive);
 extern int CALLCONV read_lba_asm(PBFS_DAP *dap, uint8_t drive);
@@ -42,7 +46,7 @@ int mark_block_used(uint64_t block_number, uint8_t drive);
 
 // 64 bit mode - Read
 int read_lba(uint64_t lba, uint16_t count, void *buffer, uint8_t drive);
-int read_lbaUEFI(uint64_t lba, uint16_t count, void *buffer, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable);
+int read_lbaUEFI(EFI_LBA lba, UINTN count, void *buffer, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable);
 int read_ba(uint64_t block_address, uint16_t count, void *buffer, int mode, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable);
 int read_fn(const char *filename, uint16_t count_to_repeat_buffer, void *buffer, uint8_t drive, const char *caller);
 
@@ -62,20 +66,78 @@ int write_lba128(uint128_t block_address, uint128_t block_span, const void *buff
 int write_ba128(uint128_t block_address, uint128_t block_span, const void *buffer);
 int write_fn128(const char *filename, uint128_t block_span, const void *buffer);
 
+// Extracts filenames
+int extract_filename(uint8_t* start, char* out_filename, size_t max_len) {
+    size_t i = 0;
+    while (i < max_len - 1) {
+        if (start[i] == 0x00 && start[i+1] == 0x00) {
+            break;
+        }
+        out_filename[i] = start[i];
+        i++;
+    }
+    out_filename[i] = "\0\0";
+}
+
+// Checks for duplicate files
+int check_duplicate(const char* filename) {
+    for (size_t i = 0; i < file_list_size; i++) {
+        if (strcmp(file_list[i].name, filename) == 0) return FileAlreadyExists;
+    }
+    return EXIT_SUCCESS;
+}
+
+// Adds a file to the file list in memory (RAM)
+int add_file_to_list(const char* filename, uint32_t file_data_lba) {
+    // Check for duplicates
+    for (size_t i = 0; i < file_list_size; i++) {
+        if (strcmp(file_list[i].name, filename) == 0) return FileAlreadyExists;
+    }
+
+    // Resize if needed
+    if (file_list_size == file_list_capacity) {
+        size_t new_capacity = (file_list_capacity == 0) ? 8 : file_list_capacity * 2;
+        PBFS_FileListEntry* new_list = realloc(file_list, new_capacity * sizeof(PBFS_FileListEntry));
+        if (!new_list) return AllocFailed;
+        file_list = new_list;
+        file_list_capacity = new_capacity;
+    }
+
+    // Add new entry
+    file_list[file_list_size].name = strdup(filename);
+    file_list[file_list_size].lba = file_data_lba;
+    file_list_size++;
+
+    return EXIT_SUCCESS;
+}
+
+// Frees file list
+int free_file_list() {
+    for (size_t i = 0; i < file_list_size; i++) {
+        free(file_list[i].name);
+    }
+    free(file_list);
+    file_list = NULL;
+    file_list_size = 0;
+    file_list_capacity = 0;
+    return EXIT_SUCCESS;
+}
+
+// Finds a file in the file list
+int find_file_in_file_list(const char* filename) {
+    for (size_t i = 0; i < file_list_size; i++) {
+        if (strcmp(file_list[i].name, filename) == 0) return i;
+    }
+    return FileNotFound;
+}
+
 void efi_initialize(EFI_HANDLE Image_Handle, EFI_SYSTEM_TABLE *SystemTable)
 {
     InitializeLib(Image_Handle, SystemTable);
 }
 
 void initialize_bitmap(uint8_t* bitmap, uint64_t total_blocks) {
-    memset(bitmap, 0x00, BLOCK_SIZE); // All Free
 
-    // Mark reserved blocks as used
-    for (int i = 0; i < layout.Data_Start; i++) {
-        uint64_t byte_index = i / 8;
-        uint64_t bit_index = i % 8;
-        bitmap[byte_index] |= (1 << bit_index);
-    }
 }
 
 uint64_t calculate_bitmap_block_count(uint64_t total_blocks) {
@@ -129,18 +191,7 @@ uint64_t get_drive_size(DriveParameters* disk_info, uint8_t drive)
 }
 
 int is_block_free(uint64_t block_number, uint8_t drive) {
-    uint64_t bitmap_block_index = block_number / BLOCKS_PER_BITMAP_BLOCK;
-    uint64_t block_offset_in_bitmap = block_number % BLOCKS_PER_BITMAP_BLOCK;
-    uint64_t byte_index = block_offset_in_bitmap / 8;
-    uint8_t  bit_mask   = 1 << (block_offset_in_bitmap % 8);
 
-    uint8_t bitmap_block[BLOCK_SIZE];
-    uint64_t lba = layout.Bitmap_Start + bitmap_block_index;
-
-    if (read_lba(lba, 1, bitmap_block, drive) != 0)
-        return -1;
-
-    return !(bitmap_block[byte_index] & bit_mask);
 }
 
 PBFS_Layout recalculate_layout(uint32_t entry_count, uint32_t total_filetree_entries, EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable, uint8_t drive)
@@ -150,24 +201,6 @@ PBFS_Layout recalculate_layout(uint32_t entry_count, uint32_t total_filetree_ent
     layout.Header_Start = 1; // header is always 68 bytes → fits in 1 block and starts after mbr
     layout.Header_BlockSpan = 1;
     layout.Header_End = 2;
-
-    // --- FILE TABLE ---
-    uint32_t file_table_size = (entry_count + 1) * sizeof(PBFS_FileTableEntry);
-    layout.FileTable_BlockSpan = (file_table_size + BIOS_BLOCK_SIZE - 1) / BIOS_BLOCK_SIZE;
-    layout.FileTable_Start = 1 + layout.Header_BlockSpan;
-    layout.FileTable_End = layout.FileTable_Start + layout.FileTable_BlockSpan;
-
-    // --- PERMISSION TABLE ---
-    uint32_t perm_table_size = (entry_count + 1) * sizeof(PBFS_PermissionTableEntry);
-    layout.PermissionTable_BlockSpan = (perm_table_size + BIOS_BLOCK_SIZE - 1) / BIOS_BLOCK_SIZE;
-    layout.PermissionTable_Start = layout.FileTable_Start + layout.FileTable_BlockSpan;
-    layout.PermissionTable_End = layout.PermissionTable_Start + layout.PermissionTable_BlockSpan;
-
-    // --- FILE TREE ---
-    uint32_t file_tree_size = (total_filetree_entries + 1) * sizeof(PBFS_FileTreeEntry); // +1 for "~" entry
-    layout.FileTree_BlockSpan = (file_tree_size + BIOS_BLOCK_SIZE - 1) / BIOS_BLOCK_SIZE;
-    layout.FileTree_Start = layout.PermissionTable_Start + layout.PermissionTable_BlockSpan;
-    layout.FileTree_End = layout.FileTree_Start + layout.FileTree_BlockSpan;
 
     // --- BITMAP ---
     DriveParameters disk_info;
@@ -179,7 +212,7 @@ PBFS_Layout recalculate_layout(uint32_t entry_count, uint32_t total_filetree_ent
     }
     uint32_t bitmap_size = get_drive_total_blocks(disk_info.bytes_per_sector * disk_info.total_sectors, BIOS_BLOCK_SIZE);
     layout.Bitmap_BlockSpan = (bitmap_size + BIOS_BLOCK_SIZE - 1) / BIOS_BLOCK_SIZE;
-    layout.Bitmap_Start = layout.FileTree_Start + layout.FileTree_BlockSpan;
+    layout.Bitmap_Start = layout.Header_End;
     layout.Bitmap_End = layout.Bitmap_Start + layout.Bitmap_BlockSpan;
 
     // --- DATA REGION ---
@@ -284,37 +317,11 @@ uint32_t find_free_lba_span(int count, uint8_t drive, EFI_HANDLE Image_Handle, E
 }
 
 int mark_block_used(uint64_t block_number, uint8_t drive) {
-    uint64_t bitmap_block_index = block_number / BLOCKS_PER_BITMAP_BLOCK;
-    uint64_t block_offset_in_bitmap = block_number % BLOCKS_PER_BITMAP_BLOCK;
-    uint64_t byte_index = block_offset_in_bitmap / 8;
-    uint8_t  bit_mask   = 1 << (block_offset_in_bitmap % 8);
 
-    uint8_t bitmap_block[BLOCK_SIZE];
-    uint64_t lba = layout.Bitmap_Start + bitmap_block_index;
-
-    if (read_lba(lba, 1, bitmap_block, drive) != 0)
-        return -1;
-
-    bitmap_block[byte_index] |= bit_mask;
-
-    return write_lba(lba, 1, bitmap_block, drive);
 }
 
 int mark_block_free(uint64_t block_number, uint8_t drive) {
-    uint64_t bitmap_block_index = block_number / BLOCKS_PER_BITMAP_BLOCK;
-    uint64_t block_offset_in_bitmap = block_number % BLOCKS_PER_BITMAP_BLOCK;
-    uint64_t byte_index = block_offset_in_bitmap / 8;
-    uint8_t  bit_mask   = 1 << (block_offset_in_bitmap % 8);
 
-    uint8_t bitmap_block[BLOCK_SIZE];
-    uint64_t lba = layout.Bitmap_Start + bitmap_block_index;
-
-    if (read_lba(lba, 1, bitmap_block, drive) != 0)
-        return -1;
-
-    bitmap_block[byte_index] &= ~bit_mask;
-
-    return write_lba(lba, 1, bitmap_block, drive);
 }
 
 
@@ -331,55 +338,39 @@ int read_lba(uint64_t lba, uint16_t count, void *buffer, uint8_t drive)
     return read_lba_asm(&dap, drive) == 0;
 }
 
-int read_lbaUEFI(uint64_t lba, uint16_t count, void *buffer, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable)
+int read_lbaUEFI(EFI_LBA lba, UINTN count, void *buffer, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable)
 {
     EFI_STATUS status;
-    EFI_BLOCK_IO_PROTOCOL *BlockIo = NULL;
-    EFI_HANDLE *handles = NULL;
-    UINTN handleCount = 0;
+    EFI_BLOCK_IO_PROTOCOL *BlockIo;
+    EFI_HANDLE *HandleBuffer;
+    UINTN HandleCount;
+    UINTN Index;
+    // Locate the Block I/O protocol
+    status = gBS->LocateHandleBuffer(ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &HandleCount, &HandleBuffer);
+    if (EFI_ERROR(status)) {
+        return -1; // Failed to locate Block I/O protocol
+    }
 
-    // Only support 64-bit UEFI block LBA
-    status = SystemTable->BootServices->LocateHandleBuffer(
-        ByProtocol,
-        &gEfiBlockIoProtocolGuid,
-        NULL,
-        &handleCount,
-        &handles);
-    if (EFI_ERROR(status))
-        return -1;
-
-    for (UINTN i = 0; i < handleCount; ++i)
-    {
-        status = SystemTable->BootServices->HandleProtocol(
-            handles[i],
-            &gEfiBlockIo2ProtocolGuid,
-            (void **)&BlockIo);
-
-        if (EFI_ERROR(status))
-            continue;
-
-        if (!BlockIo->Media->LogicalPartition && BlockIo->Media->MediaPresent)
-        {
-            // Found usable disk
-            status = BlockIo->ReadBlocks(
-                BlockIo,
-                BlockIo->Media->MediaId,
-                lba,
-                count * 512,
-                buffer);
-
-            if (!EFI_ERROR(status))
-            {
-                return 0;
-            }
-            else
-            {
-                return -2; // Read Failed
+    // Iterate through the handles to find a suitable Block I/O device
+    for (Index = 0; Index < HandleCount; Index++) {
+        status = gBS->HandleProtocol(HandleBuffer[Index], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo);
+        if (EFI_ERROR(status)) {
+            continue; // Skip this handle if it doesn't support Block I/O
+        }
+        // Check if the device is readable
+        if (BlockIo->Media->MediaId == 0 && BlockIo->Media->ReadOnly == FALSE) {
+            // Read from the specified LBA
+            status = BlockIo->ReadBlocks(BlockIo, BlockIo->Media->MediaId, lba, count * BlockIo->Media->BlockSize, buffer);
+            if (!EFI_ERROR(status)) {
+                break; // Successfully read from the device
             }
         }
     }
-
-    return -3; // No valid device found
+    // Free the handle buffer
+    if (HandleBuffer != NULL) {
+        gBS->FreePool(HandleBuffer);
+    }
+    return EFI_ERROR(status) ? -1 : 0; // Return 0 on success, -1 on failure
 }
 
 int read_ba(uint64_t block_address, uint16_t count, void *buffer, int mode, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable)
@@ -399,203 +390,43 @@ int read_ba(uint64_t block_address, uint16_t count, void *buffer, int mode, EFI_
 
 int read_fn(const char *filename, uint16_t count_to_repeat_buffer, void *buffer, uint8_t drive, const char *caller)
 {
-    // Count here means how many times to repeat the data in the buffer, not the actual block count
-    uint64_t lba = 1; // TODO: Read LBA from file header
+    // Check for file in the file list
+    int file_index = find_file_in_file_list(filename);
 
-    PBFS_Header header;
-    PBFS_FileTableEntry* entry = NULL;
-    PBFS_PermissionTableEntry *permission_table_entry = NULL;
-    PBFS_FileTreeEntry *file_tree_entry = NULL;
-    int res;
-
-    // Read the header
-    res = read_lba(PBFS_HEADER_START_LBA, 1, &header, drive);
-
-        if (res != 0)
+    if (file_index == FileNotFound)
     {
-        return res;
+        return file_index;
     }
 
-    // Verify the header
-    if (memcmp(header.Magic, "PBFS\x00\x00", 6) != 0)
-    {
-        return HeaderVerificationFailed;
-    }
+    PBFS_FileListEntry file_entry = file_list[file_index];
 
-    // Read the file table - need to malloc or static allocate buffer for all entries
-    size_t file_table_size = header.Entries * sizeof(PBFS_FileTableEntry);
-    uint8_t *file_table = malloc(file_table_size);
+    // Read the file data
+    // Go to the file lba and read it
+    uint64_t lba = file_entry.lba;
 
-    if (!file_table)
-    {
-        return AllocFailed;
-    }
+    uint16_t* metadata_buffer = malloc(block_size);
 
-    memset(file_table, 0, file_table_size);
+    read_lba(lba, 1, metadata_buffer, drive);
 
-    uint64_t file_table_lba = header.FileTableOffset / 512; // Block number
+    // Now extract the structs
 
-    uint16_t file_table_count = header.Entries; // Block Span over 512-byte blocks
+    PBFS_FileTableEntry* file_table_entry = (PBFS_FileTableEntry*)metadata_buffer;
+    PBFS_PermissionTableEntry* permission_table_entry = (PBFS_PermissionTableEntry*)(sizeof(PBFS_FileTableEntry) + sizeof(PBFS_FileTableEntry));
 
-    res = read_lba(file_table_lba, file_table_count, file_table, drive);
+    // Now first step is to check the permissions
+    if (permission_table_entry->Read != 1) {
+        // Check the file tree
+        // Check if the caller has permission to read the file
+        PBFS_FileTreeEntry* file_tree_entry = (PBFS_FileTreeEntry*)(sizeof(PBFS_FileTableEntry) + sizeof(PBFS_PermissionTableEntry));
 
-    if (res != 0)
-    {
-        free(file_table);
-        return res;
-    }
+        while (1) {
 
-    // Loop through the file table to find the file entry
-    int found = 1;
-
-    for (int i = 0; i < header.Entries; i++)
-    {
-        entry = ((PBFS_FileTableEntry *)file_table[i]);
-
-        if (strcmp(entry->Name, filename) == 0)
-        {
-            // Found the file entry
-            // Break the loop
-            found = 0;
-            break;
         }
     }
-
-    // Check if entry was not found
-    if (found != 0)
-    {
-        free(file_table);
-        return FileNotFound;
-    }
-
-    // Read the permission table
-    uint64_t permission_table_lba = uint128_to_u64(entry->Permission_Table_Offset) / 512;
-    uint64_t *block = (uint64_t *)malloc(BIOS_BLOCK_SIZE);
-
-    if (!block)
-    {
-        return AllocFailed;
-    }
-
-    memset(block, 0, BIOS_BLOCK_SIZE);
-
-    res = read_lba(permission_table_lba, 2, block, drive); // Load 1 block as the permission_table_offset is not relative to any lba.
-
-    if (res != 0)
-    {
-        free(block);
-        free(file_table);
-        return res;
-    }
-
-    // TODO: Go to -> permission table offset - block offset in bytes
-    uint64_t permission_entry_offset = uint128_to_u64(entry->Permission_Table_Offset) % BIOS_BLOCK_SIZE;
-
-    permission_table_entry = (PBFS_PermissionTableEntry *)(block + permission_entry_offset);
-
-    // Check if permission table entry is valid
-    if (permission_table_entry->File_Tree_Offset == 0)
-    {
-        free(block);
-        free(file_table);
         return PermissionDenied;
     }
 
-    free(block);
 
-    uint64_t *blocks = (uint64_t *)malloc(BIOS_BLOCK_SIZE * 5);
-
-    // Check if Permission Table Entry doesn't have read permission
-    if (permission_table_entry->Read == 0)
-    {
-        // Read the file tree (load blocks in a for loop (5 blocks per loop))
-
-        // Load 5 blocks
-        res = read_lba(permission_table_entry->File_Tree_Offset / 512, 5, blocks, drive);
-
-        if (res != 0)
-        {
-            free(blocks);
-            free(file_table);
-            return res;
-        }
-
-        // TODO: Go to -> file tree offset - block offset in bytes
-        uint64_t file_tree_entry_offset = ((uint64_t)permission_table_entry->File_Tree_Offset % BIOS_BLOCK_SIZE);
-
-        file_tree_entry = (PBFS_FileTreeEntry *)(blocks + file_tree_entry_offset);
-
-        // Check if file tree entry is valid
-        if (file_tree_entry->Name[0] != '~')
-        {
-            free(blocks);
-            free(file_table);
-            return PermissionDenied;
-        }
-
-        found = 0; // Just Precautions :)
-        int lp_started = 0;
-
-        while (1)
-        {
-            // Loop till it hits Name[0] == ~ again or all blocks are checked
-            if (file_tree_entry->Name[0] == '~')
-            {
-                if (lp_started == 0)
-                {
-                    lp_started = 1;
-                    continue;
-                }
-                break;
-            }
-
-            if (strcmp(file_tree_entry->Name, caller) == 0)
-            {
-                found = 1;
-                break;
-            }
-        }
-
-        // Free
-        free(blocks);
-
-        // Check if found
-        if (found == 0)
-        {
-            free(file_table);
-            return FileNotFound;
-        }
-    }
-
-    // Now save the file data offset
-    uint64_t FileDataOffset = uint128_to_u64(entry->File_Data_Offset);
-    uint64_t FileBlockSpan = uint128_to_u64(entry->Block_Span);
-
-    free(file_table);
-
-    // Go to the file offset
-    uint64_t file_data_lba = FileDataOffset / 512;
-
-    res = read_lba(file_data_lba, FileBlockSpan, buffer, drive);
-
-    if (res != 0)
-    {
-        return res;
-    }
-
-    // Check if count_to_repeat_buffer is above 1 if then repeat the already file data and write it to buffer
-    if (count_to_repeat_buffer > 1)
-    {
-        for (int i = 1; i < count_to_repeat_buffer; i++)
-        {
-            // Save the buffer contents into a temp buffer and append the temp buffer to the buffer
-            uint8_t temp_buffer[BIOS_BLOCK_SIZE];
-            memcpy(temp_buffer, buffer, BIOS_BLOCK_SIZE);
-            memcpy(buffer + BIOS_BLOCK_SIZE * i, temp_buffer, BIOS_BLOCK_SIZE);
-        }
-    }
-
-    return EXIT_SUCCESS;
 }
 
 
@@ -615,26 +446,38 @@ int write_lba(uint64_t lba, uint16_t count, const void *buffer, uint8_t drive)
 EFI_STATUS write_lbaUEFI(EFI_LBA lba, UINTN block_count, void *buffer, EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     EFI_STATUS status;
-    EFI_BLOCK_IO_PROTOCOL *block_io = NULL;
-    EFI_HANDLE *handles;
-    UINTN handle_count;
+    EFI_BLOCK_IO_PROTOCOL *BlockIo;
+    EFI_HANDLE *HandleBuffer;
+    UINTN HandleCount;
+    UINTN Index;
 
-    // Locate all handles supporting Block IO Protocol
-    status = uefi_call_wrapper(SystemTable->BootServices->LocateHandleBuffer, 5, ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &handle_count, &handles);
-
-    if (EFI_ERROR(status))
+    // Locate the BlockIo protocol
+    status = gBS->LocateHandleBuffer(ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &HandleCount, &HandleBuffer);
+    if (EFI_ERROR(status)) {
         return status;
+    }
 
-    // Make sure media is present and no read-only
-    if (!block_io->Media->MediaPresent || block_io->Media->ReadOnly)
-        return EFI_ACCESS_DENIED;
+    // Iterate through handles to find a valid BlockIo protocol
+    for (Index = 0; Index < HandleCount; Index++) {
+        status = gBS->HandleProtocol(HandleBuffer[Index], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo);
+        if (EFI_ERROR(status)) {
+            continue; // Skip this handle
+        }
 
-    // Calculate Size in bytes
-    UINTN block_size = block_io->Media->BlockSize;
-    UINTN buffer_size = block_count * block_size;
+        // Check if the device is removable or writable
+        if (BlockIo->Media->MediaId == 0 && BlockIo->Media->ReadOnly == FALSE) {
+            // Write to the specified LBA
+            status = BlockIo->WriteBlocks(BlockIo, BlockIo->Media->MediaId, lba, block_count * BlockIo->Media->BlockSize, buffer);
+            if (!EFI_ERROR(status)) {
+                break;
+            }
+        }
+    }
 
-    // Write blocks
-    status = uefi_call_wrapper(block_io->WriteBlocks, 5, block_io, block_io->Media->MediaId, lba, buffer_size, buffer);
+    // Free the handle buffer
+    if (HandleBuffer != NULL) {
+        gBS->FreePool(HandleBuffer);
+    }
 
     return status;
 }
@@ -646,147 +489,7 @@ int write_ba(uint64_t block_addr, uint16_t count, const void *buffer, uint8_t dr
 
 int write_fn(const char *filename, void *data, PBFS_Permissions *permissions, char **permission_granted_files, int file_count, uint8_t drive)
 {
-    PBFS_Header header;
-    PBFS_FileTableEntry entry;
-    PBFS_PermissionTableEntry perm_entry;
-    PBFS_FileTreeEntry file_tree_entry;
 
-    int res = read_lba(PBFS_HEADER_START_LBA, 1, &header, drive);
-    if (res != 0)
-        return res;
-    if (strncmp(header.Magic, "PBFS\0\0", 6) != 0)
-        return DiskCorrupted;
-
-    // Check for existing file
-    for (uint32_t i = 0; i < header.Entries; i++)
-    {
-        uint32_t file_table_lba = header.FileTableOffset + (i * sizeof(PBFS_FileTableEntry)) / BIOS_BLOCK_SIZE;
-        res = read_lba(file_table_lba, 1, &entry, drive);
-        if (res != 0)
-            return res;
-
-        if (strncmp(entry.Name, filename, sizeof(entry.Name)) == 0)
-            return FileAlreadyExists;
-    }
-
-    // Calculate new layout with one more file entry and total tree entries (existing + new)
-    uint32_t total_tree_entries = /* function to calculate total existing tree entries */ +file_count + 1; // +1 for "~" marker
-    PBFS_Layout new_layout = recalculate_layout(header.Entries + 1, total_tree_entries, NULL, NULL, drive);
-
-    // Extract old data start LBA from header (you must store it somewhere)
-    uint32_t old_data_start_lba = layout.Data_Start;
-
-    // Shift data if new data start LBA is after old data start LBA
-    if (new_layout.Data_Start > old_data_start_lba)
-    {
-        res = shift_file_data(drive, old_data_start_lba, new_layout.Data_Start, &header);
-        if (res != 0)
-            return res;
-    }
-
-    // Update header with new layout offsets
-    header.FileTableOffset = new_layout.FileTable_Start;
-
-    // Write updated header (will be written again later after entry count increment)
-    res = write_lba(PBFS_HEADER_START_LBA, 1, &header, drive);
-    if (res != 0)
-        return res;
-
-    // Prepare new file table entry
-    memset(&entry, 0, sizeof(entry));
-    strncpy(entry.Name, filename, sizeof(entry.Name) - 1);
-
-    // Permissions table offset in bytes relative to permission table start
-    entry.Permission_Table_Offset = uint128_from_u32(header.Entries * sizeof(PBFS_PermissionTableEntry));
-
-    // Setup permission table entry for new file
-    memset(&perm_entry, 0, sizeof(perm_entry));
-    perm_entry.Read = permissions->Read;
-    perm_entry.Write = permissions->Write;
-    perm_entry.Executable = permissions->Executable;
-    perm_entry.Listable = permissions->Listable;
-    perm_entry.Hidden = permissions->Hidden;
-    perm_entry.Full_Control = permissions->Full_Control;
-    perm_entry.Delete = permissions->Delete;
-    perm_entry.Special_Access = permissions->Special_Access;
-
-    // Write file tree entries buffer setup
-    uint32_t total_tree_entries_local = file_count + 1; // +1 for "~" end marker
-    uint32_t tree_total_size = total_tree_entries_local * sizeof(PBFS_FileTreeEntry);
-    uint32_t tree_required_blocks = (tree_total_size + BIOS_BLOCK_SIZE - 1) / BIOS_BLOCK_SIZE;
-
-    uint8_t file_tree_buffer[BIOS_BLOCK_SIZE];
-    memset(file_tree_buffer, 0, BIOS_BLOCK_SIZE);
-
-    PBFS_FileTreeEntry *tree_ptr = (PBFS_FileTreeEntry *)file_tree_buffer;
-    int index = 0;
-
-    // Write file tree entries in blocks
-    for (uint32_t blk = 0; blk < tree_required_blocks; blk++)
-    {
-        memset(file_tree_buffer, 0, BIOS_BLOCK_SIZE);
-
-        for (int i = 0; i < BIOS_BLOCK_SIZE / sizeof(PBFS_FileTreeEntry); i++)
-        {
-            if (index < file_count)
-            {
-                strncpy(tree_ptr[i].Name, permission_granted_files[index], sizeof(tree_ptr[i].Name) - 1);
-            }
-            else if (index == file_count)
-            {
-                strncpy(tree_ptr[i].Name, "~", 2); // end marker
-            }
-            else
-            {
-                break;
-            }
-            index++;
-        }
-
-        res = write_lba(new_layout.FileTree_Start + blk, 1, file_tree_buffer, drive);
-        if (res != 0)
-            return res;
-    }
-
-    perm_entry.File_Tree_Offset = new_layout.FileTree_Start * BIOS_BLOCK_SIZE;
-
-    // Calculate file data size and required blocks
-    uint32_t file_size_bytes = strlen((char *)data);
-    uint32_t required_blocks = (file_size_bytes + BIOS_BLOCK_SIZE - 1) / BIOS_BLOCK_SIZE;
-
-    // Find free LBA span for file data, but since we've shifted data, it should start at new_layout.DataStartLBA + sum of previous file blocks
-    uint32_t data_start_lba = find_free_lba_span(required_blocks, drive, NULL, NULL);
-    if (data_start_lba == INVALID_LBA)
-        return NoMemoryAvailable;
-
-    // Write file data blocks
-    res = write_lba(data_start_lba, required_blocks, data, drive);
-    if (res != 0)
-        return res;
-
-    // Update new file table entry with file data offset and block span
-    entry.File_Data_Offset = uint128_from_u32(data_start_lba * BIOS_BLOCK_SIZE);
-    entry.Block_Span = uint128_from_u32(required_blocks);
-
-    // Write new file table entry at correct LBA
-    uint32_t new_file_table_lba = header.FileTableOffset + ((header.Entries) * sizeof(PBFS_FileTableEntry)) / BIOS_BLOCK_SIZE;
-    res = write_lba(new_file_table_lba, 1, &entry, drive);
-    if (res != 0)
-        return res;
-
-    // Write new permission entry
-    uint32_t new_permission_table_lba = layout.PermissionTable_Start + header.Entries * sizeof(PBFS_PermissionTableEntry);
-    res = write_lba(new_permission_table_lba, 1, &perm_entry, drive);
-    if (res != 0)
-        return res;
-
-    // Increment entries and write header again with updated count
-    header.Entries++;
-    res = write_lba(PBFS_HEADER_START_LBA, 1, &header, drive);
-    if (res != 0)
-        return res;
-
-    return EXIT_SUCCESS;
 }
 
 // Tools
