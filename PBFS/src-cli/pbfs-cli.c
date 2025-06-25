@@ -2,27 +2,24 @@
 #include "pbfs_structs.h"
 #include "disk_utils.h"
 
-int block_size = 512; // The size of a single block in bytes
-int total_blocks = 2048; // Total number of blocks
-int disk_size = 512 * 2048;
-char disk_name[24] = "PBFS_DISK\0\0";
+#include <time.h>
 
 // Verifies the memory header/end
 int pbfs_verify_mem_header(char* header, int mode){
     // Mode = 0 -> check mem start header
     // Mode = 1 -> check mem end header
-    if (mode != 0 && mode != 1) return InvalidHeader;
+    if (mode != 0 && mode != 1) return HeaderVerificationFailed;
 
     if (mode == 0) {
-        return (strncmp(header, MEM_MAGIC, MEM_MAGIC_LEN) == 0) ? EXIT_SUCCESS : InvalidHeader;
+        return (strncmp(header, MEM_MAGIC, MEM_MAGIC_LEN) == 0) ? EXIT_SUCCESS : HeaderVerificationFailed;
     }
 
-    return (strncmp(header, MEM_END_MAGIC, MEM_END_MAGIC_LEN) == 0) ? EXIT_SUCCESS : InvalidHeader;
+    return (strncmp(header, MEM_END_MAGIC, MEM_END_MAGIC_LEN) == 0) ? EXIT_SUCCESS : HeaderVerificationFailed;
 }
 
 // Verifies the header
 int pbfs_verify_header(PBFS_Header* header) {
-    if (header->Magic[0] != 'P' || header->Magic[1] != 'B' || header->Magic[2] != 'F' || header->Magic[3] != 'S' || header->Magic[4] != '\0' || header->Magic[5] != '\0') return InvalidHeader;
+    if (header->Magic[0] != 'P' || header->Magic[1] != 'B' || header->Magic[2] != 'F' || header->Magic[3] != 'S' || header->Magic[4] != '\0' || header->Magic[5] != '\0') return HeaderVerificationFailed;
     return EXIT_SUCCESS;
 }
 
@@ -40,7 +37,7 @@ int pbfs_format(const char* image) {
 
     // Fill the header
     PBFS_Header* header = (PBFS_Header*)disk;
-    memcpy(header->Magic, "PBFS\0\0", 6);
+    memcpy(header->Magic, PBFS_MAGIC, 6);
     header->Block_Size = block_size;
     header->Total_Blocks = total_blocks;
     strncpy(header->Disk_Name, disk_name, 24);

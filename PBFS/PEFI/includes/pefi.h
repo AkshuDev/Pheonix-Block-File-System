@@ -138,12 +138,12 @@ typedef enum {
 } EFI_MEMORY_TYPE;
 
 PEFI_PACKED_STRUCT(typedef struct {
-    UINT32              Type;          // EFI_MEMORY_TYPE
-    UINT32              Pad;           // padding for alignment
+    UINT32 Type;          // EFI_MEMORY_TYPE
+    UINT32 Pad;           // padding for alignment
     EFI_PHYSICAL_ADDRESS PhysicalStart;// 8 bytes
-    EFI_VIRTUAL_ADDRESS  VirtualStart; // 8 bytes
-    UINT64              NumberOfPages; // 8 bytes
-    UINT64              Attribute;     // 8 bytes (bitmask)
+    EFI_VIRTUAL_ADDRESS VirtualStart; // 8 bytes
+    UINT64 NumberOfPages; // 8 bytes
+    UINT64 Attribute;     // 8 bytes (bitmask)
 } EFI_MEMORY_DESCRIPTOR;)
 
 typedef enum {

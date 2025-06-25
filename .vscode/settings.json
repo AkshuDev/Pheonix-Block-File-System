@@ -2,6 +2,7 @@
     "files.associations": {
         "*.embeddedhtml": "html",
         "cstdlib": "c",
-        "pefi.h": "c"
+        "pefi.h": "c",
+        "pefi_priv.h": "c"
     }
 }

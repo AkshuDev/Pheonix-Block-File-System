@@ -6,10 +6,13 @@ build_dir := $(Cdir)/build-cli
 
 headers_dir := $(Cdir)/headers
 
+PEFI_dir := $(Cdir)/PEFI
+Pefi_headers_dir := $(PEFI_dir)/includes
+
 # === END CONFIG ===
 # === TOOLS ===
 CC := gcc
-CFLAGS := -I$(headers_dir) -Wall -g
+CFLAGS := -I$(headers_dir) -I$(Pefi_headers_dir) -Wall -g
 
 # === END TOOLS ===
 # === TARGETS ===

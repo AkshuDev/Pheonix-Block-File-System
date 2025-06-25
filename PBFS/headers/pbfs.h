@@ -8,13 +8,15 @@
 #include <stddef.h>
 #include <string.h>
 
-#include <pefi/includes/pefi.h>
-#include <pefi/includes/pefi_types.h> // Pheonix EFI
+#include <pefi.h>
+#include <pefi_types.h> // Pheonix EFI
 
 #define MEM_MAGIC "PBFS\0\0"
 #define MEM_END_MAGIC "PBFS_END\0\0"
 #define MEM_MAGIC_LEN 6
 #define MEM_END_MAGIC_LEN 10
+
+#define PBFS_MAGIC "PBFS\0\0"
 
 #pragma pack(push, 1)
 typedef struct {
@@ -114,6 +116,8 @@ const uint128_t zero128 = {{0, 0, 0, 0}};
     #define CALLCONV
 #endif
 
+#define PBFS_CLI_HELP "pbfs-cli <image> <commands>\nCommands:\n\t-bs: Define the Block Size\n\t-tb: Define Total number of blocks\n\t-dn: Define the disk name\n\t-f: Format the disk\n\t-help: Provides command help\n\t-c: Creates the specified image without formating it\n\t-add <filename> <filepath>: Adds a file to the image"
+
 // Errors
 typedef enum {
     //General
@@ -145,12 +149,28 @@ typedef enum {
     FileCannotBeRenamed,
     FileCannotBeTruncated,
     FileCannotBeCreated,
+    // Special Files/bytes
+    BitReadFailed,
+    ByteReadFailed,
+    BitWriteFailed,
+    ByteWriteFailed,
+    BitAppendFailed,
+    ByteAppendFailed,
+    BitSeekFailed,
+    ByteSeekFailed,
+    BitTruncateFailed,
+    ByteTruncateFailed,
     // Header
     HeaderVerificationFailed,
     // Allocation
     AllocFailed,
     // Memory
     NoMemoryAvailable,
+    // Storage
+    NoSpaceAvailable,
+    // Usage
+    InvalidUsage,
+    InvalidArgument,
 } Errors;
 
 #endif
