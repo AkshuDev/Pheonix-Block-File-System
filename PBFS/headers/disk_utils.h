@@ -5,6 +5,7 @@
 #include "pbfs_structs.h"
 
 #include <pefi_priv.h>
+#include <pefilib.h>
 
 #define MBR_BLOCK_ADDRESS 0
 #define PBFS_HEADER_START_LBA 1

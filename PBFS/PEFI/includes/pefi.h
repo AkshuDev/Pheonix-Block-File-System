@@ -1,5 +1,10 @@
 #pragma once
 
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+
 typedef uint64_t EFI_STATUS;
 typedef void* EFI_HANDLE;
 

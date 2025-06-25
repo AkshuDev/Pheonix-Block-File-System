@@ -18,7 +18,8 @@ endif
 SRC_FILES := $(SRC_DIR)/main.c \
              $(SRC_DIR)/efi_graphics.c \
              $(SRC_DIR)/efi_disk.c \
-             $(SRC_DIR)/efi_memory.c
+             $(SRC_DIR)/efi_memory.c \
+             $(SRC_DIR)/efi_init.c
 
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRC_FILES))
 
