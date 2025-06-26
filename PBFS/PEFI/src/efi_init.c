@@ -1,10 +1,12 @@
 #include <pefi.h>
 #include <pefi_types.h>
 #include <pefi_priv.h>
+#define BUILD_LIB
+#include <pefilib.h>
 
-PEFI_InternalState pefi_state = {0};
+LIB PEFI_InternalState pefi_state = {0};
 
-int InitalizeLib(EFI_SYSTEM_TABLE* SystemTable, EFI_HANDLE ImageHandle) {
+LIB int InitalizeLib(EFI_SYSTEM_TABLE* SystemTable, EFI_HANDLE ImageHandle) {
     // Check if already initialized
     if (pefi_state.initialized) {
         return PEFI_ALREADY_INITIALIZED;

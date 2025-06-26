@@ -1,4 +1,6 @@
 #include "pefi_types.h"
+#define BUILD_LIB
+#include <pefilib.h>
 
 #define EfiReservedMemoryType       0
 #define EfiLoaderCode               1
@@ -15,10 +17,10 @@
 #define EfiMemoryMappedIOPortSpace  12
 
 
-EFI_STATUS EFIAPI Allocate(EFI_SYSTEM_TABLE* SystemTable, UINTN size, void** ptr) {
+LIB EFI_STATUS EFIAPI Allocate(EFI_SYSTEM_TABLE* SystemTable, UINTN size, void** ptr) {
     return SystemTable->BootServices->AllocatePool(2 /* EfiLoaderData */, size, ptr);
 }
 
-EFI_STATUS EFIAPI Free(EFI_SYSTEM_TABLE* SystemTable, void* ptr) {
+LIB EFI_STATUS EFIAPI Free(EFI_SYSTEM_TABLE* SystemTable, void* ptr) {
     return SystemTable->BootServices->FreePool(ptr);
 }

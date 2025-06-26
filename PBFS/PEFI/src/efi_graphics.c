@@ -3,36 +3,36 @@
 #define BUILD_LIB
 #include <pefilib.h>
 
-LIB typedef struct {
+struct EFI_PIXEL_BITMASK{
     uint32_t RedMask;
     uint32_t GreenMask;
     uint32_t BlueMask;
     uint32_t ReservedMask;
-} EFI_PIXEL_BITMASK;
+};
 
-LIB typedef struct {
+struct EFI_GRAPHICS_OUTPUT_MODE_INFORMATION{
     uint32_t Version;
     uint32_t HorizontalResolution;
     uint32_t VerticalResolution;
     EFI_PIXEL_BITMASK PixelInformation;
     uint32_t PixelsPerScanLine;
-} EFI_GRAPHICS_OUTPUT_MODE_INFORMATION;
+};
 
-LIB typedef struct {
+struct EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE{
     uint32_t MaxMode;
     uint32_t Mode;
     EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* Info;
     uint64_t SizeOfInfo;
     void* FrameBufferBase;
     uint64_t FrameBufferSize;
-} EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE;
+};
 
-LIB typedef struct {
+struct EFI_GRAPHICS_OUTPUT_PROTOCOL{
     EFI_STATUS (EFIAPI *QueryMode)(void* This, uint32_t ModeNumber, uint64_t* SizeOfInfo, EFI_GRAPHICS_OUTPUT_MODE_INFORMATION** Info);
     EFI_STATUS (EFIAPI *SetMode)(void* This, uint32_t ModeNumber);
     EFI_STATUS (EFIAPI *Blt)(void*, void*, int, int, int, int, int, int, int);
     EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE* Mode;
-} EFI_GRAPHICS_OUTPUT_PROTOCOL;
+};
 
 LIB EFI_GUID EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
 LIB EFI_GRAPHICS_OUTPUT_PROTOCOL *GOP;
@@ -55,4 +55,3 @@ LIB void fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t colo
         }
     }
 }
-

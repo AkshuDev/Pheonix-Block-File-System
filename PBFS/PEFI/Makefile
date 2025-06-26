@@ -5,44 +5,47 @@ SRC_DIR := src
 BUILD_DIR := build
 INCLUDE_DIR := includes
 
-# === Platform detection ===
-UNAME_S := $(shell uname -s)
-ifeq ($(OS),Windows_NT)
-    TARGET := $(BUILD_DIR)/pefi.dll
-    DLLFLAGS := -shared -Wl,--out-implib,$(BUILD_DIR)/libpefi.a
-else
-    TARGET := $(BUILD_DIR)/libpefi.a
-endif
-
 # === Files ===
-SRC_FILES := $(SRC_DIR)/main.c \
-             $(SRC_DIR)/efi_graphics.c \
-             $(SRC_DIR)/efi_disk.c \
-             $(SRC_DIR)/efi_memory.c \
-             $(SRC_DIR)/efi_init.c
+SRC_FILES := $(wildcard $(SRC_DIR)/*.c)
 
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRC_FILES))
 
-CFLAGS := -ffreestanding -fpic -mno-red-zone -Wall -Wextra -nostdlib -m64 -I$(INCLUDE_DIR)
+CFLAGS := -w -c -fpic -Wall -Wextra -I$(INCLUDE_DIR)
 AR := ar
 CC := gcc
+
+ARCH := $(shell uname -m)
+
+ifeq ($(ARCH), x86_64)
+    CFLAGS += -m64 -mno-red-zone
+endif
+
+# === Platform ===
+
+UNAME_S := $(shell uname -s)
+ifeq ($(OS),Windows_NT)
+    TARGET := $(BUILD_DIR)/pefi.dll
+    LIBFLAGS := -shared -Wl,--out-implib,libpefi.a
+else
+    TARGET := $(BUILD_DIR)/libpefi.so
+    LIBFLAGS := -shared
+    CFLAGS += -fno-stack-protector
+endif
+
 
 # === Rules ===
 .PHONY: all clean
 
 all: $(TARGET)
 
-# Compile .c -> .o into build/
+# Build targets
+# Build Lib
+$(TARGET): $(OBJ_FILES)
+	$(CC) $(LIBFLAGS) -o $@ $(OBJ_FILES)
+
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Build targets
-$(BUILD_DIR)/pefi.dll: $(OBJ_FILES)
-	$(CC) $(CFLAGS) $(DLLFLAGS) $^ -o $@
-
-$(BUILD_DIR)/libpefi.a: $(OBJ_FILES)
-	$(AR) rcs $@ $^
+	$(CC) $(CFLAGS) $< -o $@
 
 # Clean
 clean:
