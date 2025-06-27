@@ -1,5 +1,4 @@
-// HI, This is a driver for ARM and ARM only
-
+// HI, This is a driver for UEFI Only
 #include <pefilib.h>
 #include <pefi_types.h>
 #include <pefi.h>
@@ -15,7 +14,7 @@ EFI_STATUS FindFirstBlockDevice() {
 	EFI_STATUS status;
 	UINTN HandleCount = 0;
 	EFI_HANDLE *handles = NULL;
-	
+
 	status = gBS->LocateHandleBuffer(
 		ByProtocol,
 		&gEfiBlockIoProtocolGuid,
@@ -23,9 +22,9 @@ EFI_STATUS FindFirstBlockDevice() {
 		&HandleCount,
 		&handles
 	);
-	
+
 	if (EFI_ERROR(status) || HandleCount == 0) return -1; // Not found
-	
+
 	status = gBS->HandleProtocol(handles[0], &gEfiBlockIoProtocolGuid, (void**)&GBlockIo);
 	gBS->FreePool(handles);
 
