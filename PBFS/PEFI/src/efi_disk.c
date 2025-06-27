@@ -1,7 +1,5 @@
 #include "pefi_types.h"
-
-#define BUILD_LIB
-#include <pefilib.h>
+#include <pefi_disk.h>
 
 struct EFI_SIMPLE_FILE_SYSTEM_PROTOCOL{
     uint64_t Revision;
@@ -24,7 +22,7 @@ LIB EFI_BLOCK_IO_PROTOCOL* pefi_find_block_io(EFI_SYSTEM_TABLE* SystemTable) {
 
 	status = gBS->LocateHandleBuffer(ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &handle_count, &handles);
 
-	if (EFI_ERROR(status)) return -1; // ERROR
+	if (EFI_ERROR(status)) return NULL; // ERROR
 
 	for (UINTN i = 0; i < handle_count; i++) {
 		status = gBS->HandleProtocol(handles[i], &gEfiBlockIoProtocolGuid, (void**)&blockio);

@@ -4,8 +4,7 @@
 #include "pbfs.h"
 #include "pbfs_structs.h"
 
-#include <pefi_priv.h>
-#include <pefilib.h>
+#include <pefilib.h> // Includes all of PEFI
 
 #define MBR_BLOCK_ADDRESS 0
 #define PBFS_HEADER_START_LBA 1
@@ -271,7 +270,7 @@ PBFS_Layout recalculate_layout(uint32_t entry_count, uint32_t total_filetree_ent
         get_drive_params_real(&disk_info, drive);
     } else {
         // UEFI
-        get_drive_params_uefi(&disk_info, ImageHandle, SystemTable);
+        //get_drive_params_uefi(&disk_info, ImageHandle, SystemTable);
     }
     uint32_t bitmap_size = get_drive_total_blocks(disk_info.bytes_per_sector * disk_info.total_sectors, BIOS_BLOCK_SIZE);
     layout.Bitmap_BlockSpan = (bitmap_size + BIOS_BLOCK_SIZE - 1) / BIOS_BLOCK_SIZE;
@@ -349,7 +348,7 @@ uint32_t find_free_lba_span(int count, uint8_t drive, EFI_HANDLE Image_Handle, E
     if (is_real_mode() == 1) {
         get_drive_params_real(&drive_params, drive);
     } else {
-        get_drive_params_uefi(&drive_params, Image_Handle, SystemTable);
+        //get_drive_params_uefi(&drive_params, Image_Handle, SystemTable);
     }
 
     uint32_t max_blocks = drive_params.total_sectors * drive_params.bytes_per_sector / BIOS_BLOCK_SIZE;

@@ -1,5 +1,7 @@
 [BITS 16]
-[GLOBAL get_drive_params_real_asm]
+
+section .text
+    global get_drive_params_real_asm
 
 get_drive_params_real_asm:
     push es

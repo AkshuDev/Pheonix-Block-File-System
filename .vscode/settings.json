@@ -3,6 +3,7 @@
         "*.embeddedhtml": "html",
         "cstdlib": "c",
         "pefi.h": "c",
-        "pefi_priv.h": "c"
+        "pefi_priv.h": "c",
+        "pbfs_structs.h": "c"
     }
 }

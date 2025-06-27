@@ -10,7 +10,7 @@ SRC_FILES := $(wildcard $(SRC_DIR)/*.c)
 
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRC_FILES))
 
-CFLAGS := -w -c -fpic -Wall -Wextra -I$(INCLUDE_DIR)
+CFLAGS := -DBUILD_LIB -w -c -fpic -Wall -Wextra -I$(INCLUDE_DIR)
 AR := ar
 CC := gcc
 
@@ -25,7 +25,13 @@ endif
 UNAME_S := $(shell uname -s)
 ifeq ($(OS),Windows_NT)
     TARGET := $(BUILD_DIR)/pefi.dll
-    LIBFLAGS := -shared -Wl,--out-implib,libpefi.a
+    LIBFLAGS := -shared -Wl,--out-implib,$(BUILD_DIR)/libpefi.a
+else ifeq ($(findstring MSYS_NT, $(OS)), MSYS_NT)
+	TARGET := $(BUILD_DIR)/pefi.dll
+    LIBFLAGS := -shared -Wl,--out-implib,$(BUILD_DIR)/libpefi.a
+else ifeq ($(findstring MINGW, $(OS)), MINGW)
+	TARGET := $(BUILD_DIR)/pefi.dll
+    LIBFLAGS := -shared -Wl,--out-implib,$(BUILD_DIR)/libpefi.a
 else
     TARGET := $(BUILD_DIR)/libpefi.so
     LIBFLAGS := -shared

@@ -1,6 +1,5 @@
 #include "pefi_types.h"
-#define BUILD_LIB
-#include <pefilib.h>
+#include <pefi_memory.h>
 
 #define EfiReservedMemoryType       0
 #define EfiLoaderCode               1

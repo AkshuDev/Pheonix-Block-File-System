@@ -1,7 +1,5 @@
 #include "pefi_types.h"
-
-#define BUILD_LIB
-#include <pefilib.h>
+#include <pefi_graphics.h>
 
 struct EFI_PIXEL_BITMASK{
     uint32_t RedMask;
@@ -51,7 +49,7 @@ LIB void pefi_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
 LIB void pefi_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
     for (uint32_t j = 0; j < h; j++) {
         for (uint32_t i = 0; i < w; i++) {
-            draw_pixel(x + i, y + j, color);
+            pefi_draw_pixel(x + i, y + j, color);
         }
     }
 }

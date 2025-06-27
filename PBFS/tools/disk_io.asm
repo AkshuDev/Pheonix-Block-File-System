@@ -1,7 +1,8 @@
 [BITS 16]
 
-[GLOBAL read_lba_asm]
-[GLOBAL write_lba_asm]
+section .text
+    global read_lba_asm
+    global write_lba_asm
 
 ; int read_lba_asm(PBFS_DAP *dap, uint8_t drive)
 read_lba_asm:
