@@ -111,12 +111,15 @@ int main(int argc, char** argv) {
             block_size = atoi(argv[i + 1]);
             // Update the disk size
             disk_size = block_size * total_blocks;
+            i++;
         } else if (strncmp(argv[i], "-tb", 3) == 0) {
             total_blocks = atoi(argv[i + 1]);
             // Update the disk size
             disk_size = block_size * total_blocks;
+            i++;
         } else if (strncmp(argv[i], "-dn", 3) == 0) {
             strncpy(disk_name, argv[i + 1], 24);
+            i++;
         } else if (strncmp(argv[i], "-f", 2) == 0) {
             format_image = 1;
         } else if (strncmp(argv[i], "-help", 5) == 0) {
@@ -135,6 +138,8 @@ int main(int argc, char** argv) {
             add_file = 1;
             filename = argv[i + 1];
             filepath = argv[i + 2];
+            i++;
+            i++;
         } else {
             printf("Unknown command: %s\n", argv[i]);
             return InvalidArgument;

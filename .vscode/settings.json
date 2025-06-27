@@ -4,6 +4,7 @@
         "cstdlib": "c",
         "pefi.h": "c",
         "pefi_priv.h": "c",
-        "pbfs_structs.h": "c"
+        "pbfs_structs.h": "c",
+        "pbfs.h": "c"
     }
 }

@@ -18,9 +18,8 @@ OBJS := $(C_OBJS) $(ASM_OBJS)
 # === END CONFIG ===
 # === TOOLS ===
 CC := gcc
-CFLAGS := -I$(headers_dir) -I$(Pefi_headers_dir) -Wall -g
+CFLAGS := -I$(headers_dir) -I$(Pefi_headers_dir) -Wall -g -w
 CFLAGS_LIB := -L$(PEFI_dir)/build -lpefi
-CFLAGS_COMPILE := -I$(headers_dir) -I$(Pefi_headers_dir) -c -g -w
 
 ASM := nasm
 ASMFLAGS := -f
@@ -45,18 +44,13 @@ TARGET := $(build_dir)/pbfs-cli.exe
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(CFLAGS_LIB)
+$(TARGET): $(ASM_OBJS) $(C_SRCFILES)
+	$(CC) $(CFLAGS) -o $@ $(ASM_OBJS) $(C_SRCFILES) $(CFLAGS_LIB)
 
 # Assemble the base files
 $(build_dir)/%.o: $(BaseDir)/tools/%.asm
 	@mkdir -p $(build_dir)
 	$(ASM) $(ASMFLAGS) $< -o $@
-
-# Compile .c -> .o
-$(build_dir)/%.o: %.c
-	@mkdir -p $(build_dir)
-	$(CC) $(CFLAGS_COMPILE) $< -o $@
 
 clean:
 	rm -rf $(build_dir)
