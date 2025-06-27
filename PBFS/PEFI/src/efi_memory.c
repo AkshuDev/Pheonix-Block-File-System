@@ -17,10 +17,10 @@
 #define EfiMemoryMappedIOPortSpace  12
 
 
-LIB EFI_STATUS EFIAPI Allocate(EFI_SYSTEM_TABLE* SystemTable, UINTN size, void** ptr) {
+LIB EFI_STATUS EFIAPI pefi_allocate(EFI_SYSTEM_TABLE* SystemTable, UINTN size, void** ptr) {
     return SystemTable->BootServices->AllocatePool(2 /* EfiLoaderData */, size, ptr);
 }
 
-LIB EFI_STATUS EFIAPI Free(EFI_SYSTEM_TABLE* SystemTable, void* ptr) {
+LIB EFI_STATUS EFIAPI pefi_free(EFI_SYSTEM_TABLE* SystemTable, void* ptr) {
     return SystemTable->BootServices->FreePool(ptr);
 }

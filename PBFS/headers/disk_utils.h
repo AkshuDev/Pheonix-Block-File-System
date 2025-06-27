@@ -31,6 +31,8 @@ PBFS_FileListEntry* file_list = NULL;     // pointer to array of PBFS_FileListEn
 size_t file_list_size = 0;   // number of valid entries
 size_t file_list_capacity = 0;  // how many slots are allocated
 
+EFI_BLOCK_IO_PROTOCOL* GBlockIo = NULL;
+
 // Asm imports
 extern uint16_t CALLCONV get_drive_params_real_asm(uint16_t buffer_seg_offset, uint8_t drive);
 extern int CALLCONV read_lba_asm(PBFS_DAP *dap, uint8_t drive);
@@ -176,6 +178,8 @@ int find_file_in_file_list(const char* filename) {
 void efi_initialize(EFI_HANDLE Image_Handle, EFI_SYSTEM_TABLE *SystemTable)
 {
     InitalizeLib(Image_Handle, SystemTable);
+
+    GBlockIo = pefi_find_block_io(SystemTable);
 }
 
 void initialize_bitmap(uint8_t* bitmap, uint64_t total_blocks) {
@@ -439,37 +443,7 @@ int read_lba(uint64_t lba, uint16_t count, void *buffer, uint8_t drive)
 
 int read_lbaUEFI(EFI_LBA lba, UINTN count, void *buffer, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable)
 {
-    EFI_STATUS status;
-    EFI_BLOCK_IO_PROTOCOL *BlockIo;
-    EFI_HANDLE *HandleBuffer;
-    UINTN HandleCount;
-    UINTN Index;
-    // Locate the Block I/O protocol
-    status = gBS->LocateHandleBuffer(ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &HandleCount, &HandleBuffer);
-    if (EFI_ERROR(status)) {
-        return -1; // Failed to locate Block I/O protocol
-    }
-
-    // Iterate through the handles to find a suitable Block I/O device
-    for (Index = 0; Index < HandleCount; Index++) {
-        status = gBS->HandleProtocol(HandleBuffer[Index], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo);
-        if (EFI_ERROR(status)) {
-            continue; // Skip this handle if it doesn't support Block I/O
-        }
-        // Check if the device is readable
-        if (BlockIo->Media->MediaId == 0 && BlockIo->Media->ReadOnly == FALSE) {
-            // Read from the specified LBA
-            status = BlockIo->ReadBlocks(BlockIo, BlockIo->Media->MediaId, lba, count * BlockIo->Media->BlockSize, buffer);
-            if (!EFI_ERROR(status)) {
-                break; // Successfully read from the device
-            }
-        }
-    }
-    // Free the handle buffer
-    if (HandleBuffer != NULL) {
-        gBS->FreePool(HandleBuffer);
-    }
-    return EFI_ERROR(status) ? -1 : 0; // Return 0 on success, -1 on failure
+    return pefi_read_lba(SystemTable, image, lba, count, buffer, GBlockIo);
 }
 
 int read_ba(uint64_t block_address, uint16_t count, void *buffer, int mode, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable)
@@ -566,41 +540,7 @@ int write_lba(uint64_t lba, uint16_t count, const void *buffer, uint8_t drive)
 
 EFI_STATUS write_lbaUEFI(EFI_LBA lba, UINTN block_count, void *buffer, EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
-    EFI_STATUS status;
-    EFI_BLOCK_IO_PROTOCOL *BlockIo;
-    EFI_HANDLE *HandleBuffer;
-    UINTN HandleCount;
-    UINTN Index;
-
-    // Locate the BlockIo protocol
-    status = gBS->LocateHandleBuffer(ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &HandleCount, &HandleBuffer);
-    if (EFI_ERROR(status)) {
-        return status;
-    }
-
-    // Iterate through handles to find a valid BlockIo protocol
-    for (Index = 0; Index < HandleCount; Index++) {
-        status = gBS->HandleProtocol(HandleBuffer[Index], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo);
-        if (EFI_ERROR(status)) {
-            continue; // Skip this handle
-        }
-
-        // Check if the device is removable or writable
-        if (BlockIo->Media->MediaId == 0 && BlockIo->Media->ReadOnly == FALSE) {
-            // Write to the specified LBA
-            status = BlockIo->WriteBlocks(BlockIo, BlockIo->Media->MediaId, lba, block_count * BlockIo->Media->BlockSize, buffer);
-            if (!EFI_ERROR(status)) {
-                break;
-            }
-        }
-    }
-
-    // Free the handle buffer
-    if (HandleBuffer != NULL) {
-        gBS->FreePool(HandleBuffer);
-    }
-
-    return status;
+    return pefi_write_lba(SystemTable, ImageHandle, lba, block_count, buffer, GBlockIo);
 }
 
 int write_ba(uint64_t block_addr, uint16_t count, const void *buffer, uint8_t drive)

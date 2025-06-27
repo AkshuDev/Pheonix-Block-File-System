@@ -40,20 +40,22 @@ extern "C" {
 LIB int InitalizeLib(EFI_SYSTEM_TABLE* SystemTable, EFI_HANDLE ImageHandle);
 LIB extern PEFI_InternalState pefi_state;
 // main.c
-LIB void efi_print(EFI_SYSTEM_TABLE* SystemTable, const uint16_t* str);
-LIB EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable);
+LIB void pefi_print(EFI_SYSTEM_TABLE* SystemTable, const uint16_t* str);
+LIB EFI_STATUS pefi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable);
 // efi_memory
-LIB EFI_STATUS EFIAPI Allocate(EFI_SYSTEM_TABLE *SystemTable, UINTN size, void** ptr);
-LIB EFI_STATUS EFIAPI Free(EFI_SYSTEM_TABLE* SystemTable, void* ptr);
+LIB EFI_STATUS EFIAPI pefi_allocate(EFI_SYSTEM_TABLE *SystemTable, UINTN size, void** ptr);
+LIB EFI_STATUS EFIAPI pefi_free(EFI_SYSTEM_TABLE* SystemTable, void* ptr);
 // efi_disk
-LIB EFI_STATUS read_file(EFI_SYSTEM_TABLE* SystemTable, EFI_HANDLE ImageHandle);
+LIB EFI_BLOCK_IO_PROTOCOL* pefi_find_block_io(EFI_SYSTEM_TABLE* SystemTable);
+LIB EFI_STATUS pefi_read_lba(EFI_SYSTEM_TABLE* SystemTable, EFI_HANDLE ImageHandle, EFI_LBA lba, UINTN count, void *buffer, EFI_BLOCK_IO_PROTOCOL* GBlockIo);
+LIB EFI_STATUS pefi_write_lba(EFI_SYSTEM_TABLE* SystemTable, EFI_HANDLE ImageHandle, EFI_LBA lba, UINTN count, void *buffer, EFI_BLOCK_IO_PROTOCOL* GBlockIo);
 LIB extern EFI_GUID EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
 // efi_graphics
 LIB extern EFI_GUID EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
 LIB extern EFI_GRAPHICS_OUTPUT_PROTOCOL *GOP;
-LIB EFI_STATUS init_gop(EFI_SYSTEM_TABLE* SystemTable);
-LIB void draw_pixel(uint32_t x, uint32_t y, uint32_t color);
-LIB void fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
+LIB EFI_STATUS pefi_init_gop(EFI_SYSTEM_TABLE* SystemTable);
+LIB void pefi_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
+LIB void pefi_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 #ifdef __cplusplus
 }
 #endif

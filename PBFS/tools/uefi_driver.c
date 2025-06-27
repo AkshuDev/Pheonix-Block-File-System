@@ -1,4 +1,5 @@
 // HI, This is a driver for UEFI Only
+// NOTE: This driver is a real driver but is just a backup as PEFI already contains all this in its library file.
 #include <pefilib.h>
 #include <pefi_types.h>
 #include <pefi.h>
@@ -10,37 +11,42 @@ int INIT_EFI(EFI_SYSTEM_TABLE* SystemTable, EFI_HANDLE ImageHandle) {
 
 EFI_BLOCK_IO_PROTOCOL *GBlockIo = NULL;
 
-EFI_STATUS FindFirstBlockDevice() {
+int EFI_LOCATE_BLOCK_IO(EFI_SYSTEM_TABLE* SystemTable) {
 	EFI_STATUS status;
-	UINTN HandleCount = 0;
-	EFI_HANDLE *handles = NULL;
+	EFI_HANDLE *handles;
+	UINTN handle_count;
 
-	status = gBS->LocateHandleBuffer(
-		ByProtocol,
-		&gEfiBlockIoProtocolGuid,
-		NULL,
-		&HandleCount,
-		&handles
-	);
+	status = gBS->LocateHandleBuffer(ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &handle_count, &handles);
 
-	if (EFI_ERROR(status) || HandleCount == 0) return -1; // Not found
+	if (EFI_ERROR(status)) return -1; // ERROR
 
-	status = gBS->HandleProtocol(handles[0], &gEfiBlockIoProtocolGuid, (void**)&GBlockIo);
+	for (UINTN i = 0; i < handle_count; i++) {
+		status = gBS->HandleProtocol(handles[i], &gEfiBlockIoProtocolGuid, (void**)&GBlockIo);
+
+		if (!EFI_ERROR(status)) break;
+	}
+
 	gBS->FreePool(handles);
+
+	return 0; // SUCCESS
+}
+
+EFI_STATUS EFI_READ_LBA(EFI_SYSTEM_TABLE* SystemTable, EFI_HANDLE ImageHandle, EFI_LBA lba, UINTN count, void *buffer) {
+	if (!GBlockIo || !buffer) return -1; // ERROR
+
+	EFI_STATUS status = GBlockIo->ReadBlocks(GBlockIo, GBlockIo->Media->MediaId, lba, count * GBlockIo->Media->BlockSize, buffer);
+
+	if (EFI_ERROR(status)) return -2; // ERROR 2
 
 	return status;
 }
 
-EFI_STATUS Read_Block_LBA(UINT64 lba, void* buffer) {
-	if (!GBlockIo) {
-		EFI_STATUS status = FindFirstBlockDevice();
-		if (EFI_ERROR(status)) return status;
-	}
+EFI_STATUS EFI_WRITE_LBA(EFI_SYSTEM_TABLE* SystemTable, EFI_HANDLE ImageHandle, EFI_LBA lba, UINTN count, void *buffer) {
+	if (!GBlockIo || !buffer) return -1; // ERROR
 
-	EFI_BLOCK_IO_PROTOCOL *bio = GBlockIo;
-	UINT32 mediaId = bio->Media->MediaId;
-	UINTN blockSize = bio->Media->BlockSize;
+	EFI_STATUS status = GBlockIo->WriteBlocks(GBlockIo, GBlockIo->Media->MediaId, lba, count * GBlockIo->Media->BlockSize, buffer);
 
-	return bio->ReadBlocks(bio, mediaId, lba, blockSize, buffer);
-}
+	if (EFI_ERROR(status)) return -2; // ERROR 2
+
+	return status;
 }
