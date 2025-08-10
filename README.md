@@ -9,13 +9,13 @@
 PBFS is referred to as:
 
 - **Pheonix Block File System**: When discussing block-level storage, structure, and system integration. This is the PBFS in this github repo.
-- **Python-Based File System**: When focusing on its implementation, which is purely in Python. It is the first PBFS that is created purely in python.
+- **Python-Based File System**: When focusing on its first implementation, which is purely in Python. It is the first PBFS that is created purely in python.
 
 Both are valid and describe different aspects of the same system.
 
 ---
 
-## 🔗 Location in the `phardwareitk` Python Module
+## Location in the `phardwareitk` Python Module
 
 PBFS is implemented as part of the [`phardwareitk`](https://pypi.org/project/phardwareitk) module.
 
@@ -37,3 +37,4 @@ pip install phardwareitk
 ```cmd
 pip install phardwareitk
 ```
+
