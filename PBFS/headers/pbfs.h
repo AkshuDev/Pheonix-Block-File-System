@@ -116,7 +116,7 @@ const uint128_t zero128 = {{0, 0, 0, 0}};
     #define CALLCONV
 #endif
 
-#define PBFS_CLI_HELP "pbfs-cli <image> <commands>\nCommands:\n\t-bs: Define the Block Size\n\t-tb: Define Total number of blocks\n\t-dn: Define the disk name\n\t-f: Format the disk\n\t-help: Provides command help\n\t-c: Creates the specified image without formating it\n\t-add <filename> <filepath>: Adds a file to the image"
+#define PBFS_CLI_HELP "pbfs-cli <image> <commands>\nCommands:\n\t-bs: Define the Block Size\n\t-tb: Define Total number of blocks\n\t-dn: Define the disk name\n\t-f: Format the disk\n\t-help: Provides command help\n\t-c: Creates the specified image without formating it\n\t-add <filename> <filepath>: Adds a file to the image\n"
 
 // Errors
 typedef enum {

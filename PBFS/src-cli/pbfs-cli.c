@@ -1,8 +1,16 @@
+#define CLI
+
 #include "pbfs.h"
 #include "pbfs_structs.h"
 #include "disk_utils.h"
 
 #include <time.h>
+
+static size_t align_up(size_t value, size_t alignment) {
+    if (alignment == 0) return value;
+    size_t remainder = value % alignment;
+    return remainder == 0 ? value : value + alignment - remainder;
+}
 
 // Verifies the memory header/end
 int pbfs_verify_mem_header(char* header, int mode){
@@ -28,15 +36,19 @@ int pbfs_format(const char* image) {
     FILE* fp = fopen(image, "wb");
     if (!fp) return FileError;
 
-    // Allocate full disk
-    uint64_t* disk = calloc(1, disk_size);
+    // Allocate Blocks
+    uint64_t* disk = calloc(1, block_size);
     if (!disk) {
         fclose(fp);
         return AllocFailed;
     }
 
+    // Write Reserved block
+    fwrite(disk, 1, block_size, fp);
+
     // Fill the header
     PBFS_Header* header = (PBFS_Header*)disk;
+    memset(header, 0, block_size);
     memcpy(header->Magic, PBFS_MAGIC, 6);
     header->Block_Size = block_size;
     header->Total_Blocks = total_blocks;
@@ -46,13 +58,26 @@ int pbfs_format(const char* image) {
     header->Version = 1;
     header->OS_BootMode = 0;
 
-    header->FileTableOffset = 2 * block_size;
+    // Bitmap stuff
+    uint64_t bitmap_size = (uint64_t)align_up(total_blocks, block_size);
+    uint64_t bitmap_blocks = (bitmap_size + 511) / 512;  // Round up to blocks
+
+    header->FileTableOffset = (block_size * 2) + bitmap_size;
     header->Entries = 0;
 
-    memcpy(disk + (block_size * 1), &header, sizeof(PBFS_Header));
-    // Write File Table now
-    // Nothing for now
-    fwrite(disk, 1, disk_size, fp);
+    // Write header
+    fwrite(disk, 1, block_size, fp);
+
+    // Write Bitmap
+    memset(disk, 0, block_size);
+    disk[0] = 0x07;
+    fwrite(disk, 1, block_size, fp);
+    disk[0] = 0x0;
+
+    uint64_t remaining_blocks = total_blocks - (2 + bitmap_blocks);
+    for (uint64_t i = 0; i < remaining_blocks; i++) {
+      fwrite(disk, 1, block_size, fp);
+    }
 
     free(disk);
     fclose(fp);
@@ -72,15 +97,17 @@ int pbfs_create(const char* image) {
     if (!fp) return FileError;
 
     // Allocate full disk
-    uint64_t* disk = calloc(1, disk_size);
+    uint64_t* disk = calloc(1, block_size);
     if (!disk) {
         fclose(fp);
         return AllocFailed;
     }
 
     // Now write zeroes
-    memset(disk, 0, disk_size);
-    fwrite(disk, 1, disk_size, fp);
+    memset(disk, 0, block_size);
+    for (uint64_t i = 0; i < total_blocks; i++) {
+        fwrite(disk, 1, block_size, fp);
+    }
 
     free(disk);
     fclose(fp);
@@ -91,7 +118,7 @@ int pbfs_create(const char* image) {
 // Main function
 int main(int argc, char** argv) {
     if (argc < 2) {
-        perror("Usage: pbfs-cli <image> <commands>\nCommands:\n\t-bs: Define the Block Size\n\t-tb: Define Total number of blocks\n\t-dn: Define the disk name\n\t-f: Format the disk\n\t... USE -help for more info.\n");
+        fprintf(stderr, "Usage: pbfs-cli <image> <commands>\nCommands:\n\t-bs: Define the Block Size\n\t-tb: Define Total number of blocks\n\t-dn: Define the disk name\n\t-f: Format the disk\n\t... USE -help for more info.\n");
         return InvalidUsage;
     }
 
@@ -101,8 +128,16 @@ int main(int argc, char** argv) {
     int add_file = 0;
     char* filename = "";
     char* filepath = "";
-    PBFS_Permissions* permissions = NULL;
-    char** permission_granted_files = NULL;
+    PBFS_Permissions permissions = {
+        .Read = 1,
+        .Write = 1,
+    };
+    char* permission_granted_files = NULL;
+
+    if (strncmp(argv[1], "-help", 5) == 0) {
+      printf(PBFS_CLI_HELP);
+      return EXIT_SUCCESS;
+    }
 
     char* image = argv[1];
 
@@ -131,7 +166,7 @@ int main(int argc, char** argv) {
         } else if (strncmp(argv[i], "-add", 4) == 0) {
             // Add a file
             // Check if the filename and filepath are also provided
-            if (argv[i + 1] == NULL || argv[i + 2] == NULL) {
+            if (i + 3 > argc) {
                 printf("Usage: pbfs-cli <image> -add <filename> <filepath>\n");
                 return InvalidUsage;
             }
@@ -151,6 +186,7 @@ int main(int argc, char** argv) {
     printf("Disk Name: %s\n", disk_name);
 
     if (create_image) {
+        printf("Creating Image...\n");
         int out = pbfs_create(image);
 
         if (out != EXIT_SUCCESS) {
@@ -159,6 +195,7 @@ int main(int argc, char** argv) {
         }
     }
     if (format_image) {
+        printf("Formating Image...\n");
         int out = pbfs_format(image);
 
         if (out != EXIT_SUCCESS) {
@@ -167,12 +204,28 @@ int main(int argc, char** argv) {
         }
     }
     if (add_file) {
-        int out = PBFS_WRITE(filename, filepath, permissions, permission_granted_files, 1, 0x80);
+        PBFS_SET_IMAGE_PATH(image);
+        printf("Adding File [%s] to Image...\n", filename);
+        FILE* fp = fopen(filepath, "rb");
+        if (!fp){
+            perror("Failed to open file!\n");
+            return -1;
+        }
+        fseek(fp, 0, SEEK_END);
+        size_t size = ftell(fp);
+        rewind(fp);
+        char* data = malloc(size);
+        fread(data, size, 1, fp);
+        fclose(fp);
+
+        int out = PBFS_WRITE(filename, data, &permissions, &permission_granted_files, 0, 0x80);
 
         if (out != EXIT_SUCCESS) {
+            free(data);
             perror("An Error Occurred!\n");
             return out;
         }
+        free(data);
     }
 
     return EXIT_SUCCESS;

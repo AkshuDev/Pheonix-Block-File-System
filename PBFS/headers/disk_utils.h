@@ -16,11 +16,17 @@
 int block_size = 512; // The size of a single block in bytes
 int total_blocks = 2048; // Total number of blocks
 int disk_size = 512 * 2048;
+# ifdef CLI
+char image_path[256];
+#endif
+
 char disk_name[24] = "PBFS_DISK\0\0";
 
 uint128_t header_block_span = (uint128_t){0, 0, 0, 1};
 
-uint64_t Data_block_address = 2;
+uint64_t Header_block_address = 1;
+uint64_t Bitmap_block_address = 2;
+uint64_t Data_block_address = 3;
 
 uint64_t Permission_Block_Count = 1;
 
@@ -54,16 +60,25 @@ int mark_block_free(uint64_t block_number, uint8_t drive);
 int mark_block_used(uint64_t block_number, uint8_t drive);
 
 // 64 bit mode - Read
+#ifdef CLI
+int read_lba(uint64_t lba, uint16_t count, void *buffer, size_t size);
+#else
 int read_lba(uint64_t lba, uint16_t count, void *buffer, uint8_t drive);
+#endif
 int read_lbaUEFI(EFI_LBA lba, UINTN count, void *buffer, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable);
 int read_ba(uint64_t block_address, uint16_t count, void *buffer, int mode, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable);
 int read_fn(const char *filename, uint16_t count_to_repeat_buffer, void *buffer, uint8_t drive, const char *caller);
 
 // 64 bit mode - Write
+#ifdef CLI
+int write_lba(uint64_t lba, uint16_t count, const void *buffer, size_t size);
+#else
 int write_lba(uint64_t lba, uint16_t count, const void *buffer, uint8_t drive);
+#endif
+
 EFI_STATUS write_lbaUEFI(EFI_LBA lba, UINTN count, void *buffer, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable);
 int write_ba(uint64_t block_addr, uint16_t count, const void *buffer, uint8_t drive);
-int write_fn(const char *filename, void *data, PBFS_Permissions *permissions, char **permission_granted_files, int file_count, uint8_t drive);
+int write_fn(const char *filename, const char *data, PBFS_Permissions *permissions, char **permission_granted_files, int file_count, uint8_t drive);
 
 // 128 bit mode - Read
 int read_lba128(uint128_t block_address, uint128_t block_span, void *buffer, uint8_t drive);
@@ -75,15 +90,31 @@ int write_lba128(uint128_t block_address, uint128_t block_span, const void *buff
 int write_ba128(uint128_t block_address, uint128_t block_span, const void *buffer);
 int write_fn128(const char *filename, uint128_t block_span, const void *buffer);
 
+// CLI
+#ifdef CLI
+int set_image_path(const char* path) {
+    snprintf(image_path, sizeof(image_path), "%s", path);
+    return 0;
+}
+#endif // CLI
+
 // Helper function to read the bitmap block containing our target block
 static int read_bitmap_block(uint64_t block_number, uint8_t *bitmap_block, uint8_t drive) {
-    uint64_t bitmap_block_num = layout.Bitmap_Start + (block_number / (block_size * 8));
-    return read_lba(bitmap_block_num, layout.Bitmap_BlockSpan, bitmap_block, drive);
+    uint64_t bitmap_block_num = Bitmap_block_address + (block_number / (block_size * 8));
+    #ifdef CLI
+    return read_lba(bitmap_block_num, 1, bitmap_block, block_size);
+    #else
+    return read_lba(bitmap_block_num, 1, bitmap_block, drive);
+    #endif
 }
 // Helper function to write the modified bitmap block back
 static int write_bitmap_block(uint64_t block_number, uint8_t *bitmap_block, uint8_t drive) {
     uint64_t bitmap_block_num = layout.Bitmap_Start + (block_number / (block_size * 8));
-    return write_lba(bitmap_block_num, layout.Bitmap_BlockSpan, bitmap_block, drive);
+    #ifndef CLI
+    return write_lba(bitmap_block_num, 1, bitmap_block, drive);
+    #else
+    return write_lba(bitmap_block_num, 1, bitmap_block, block_size);
+    #endif
 }
 
 // Extracts filenames
@@ -182,7 +213,7 @@ void efi_initialize(EFI_HANDLE Image_Handle, EFI_SYSTEM_TABLE *SystemTable)
 }
 
 void initialize_bitmap(uint8_t* bitmap, uint64_t total_blocks) {
-
+    
 }
 
 uint64_t calculate_bitmap_block_count(uint64_t total_blocks) {
@@ -258,20 +289,23 @@ int is_block_free(uint64_t block_number, uint8_t drive) {
 
 PBFS_Layout recalculate_layout(uint32_t entry_count, uint32_t total_filetree_entries, EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable, uint8_t drive)
 {
-    PBFS_Layout layout;
-
     layout.Header_Start = 1; // header is always 68 bytes → fits in 1 block and starts after mbr
     layout.Header_BlockSpan = 1;
     layout.Header_End = 2;
 
     // --- BITMAP ---
     DriveParameters disk_info;
+    #ifndef CLI
     if (is_real_mode() == 1){
         get_drive_params_real(&disk_info, drive);
     } else {
         // UEFI
         //get_drive_params_uefi(&disk_info, ImageHandle, SystemTable);
     }
+    #else
+    disk_info.bytes_per_sector = block_size;
+    disk_info.total_sectors = total_blocks;
+    #endif
     uint32_t bitmap_size = get_drive_total_blocks(disk_info.bytes_per_sector * disk_info.total_sectors, BIOS_BLOCK_SIZE);
     layout.Bitmap_BlockSpan = (bitmap_size + BIOS_BLOCK_SIZE - 1) / BIOS_BLOCK_SIZE;
     layout.Bitmap_Start = layout.Header_End;
@@ -279,6 +313,10 @@ PBFS_Layout recalculate_layout(uint32_t entry_count, uint32_t total_filetree_ent
 
     // --- DATA REGION ---
     layout.Data_Start = layout.Bitmap_End;
+
+    Header_block_address = layout.Header_Start;
+    Bitmap_block_address = layout.Bitmap_Start;
+    Data_block_address = layout.Data_Start;
 
     return layout;
 }
@@ -343,13 +381,18 @@ int shift_file_data(uint8_t drive, uint32_t old_data_start_lba, uint32_t new_dat
 uint32_t find_free_lba_span(int count, uint8_t drive, EFI_HANDLE Image_Handle, EFI_SYSTEM_TABLE *SystemTable)
 {
     DriveParameters drive_params;
-
+    
+    #ifndef CLI    
     // Get drive parameters
     if (is_real_mode() == 1) {
         get_drive_params_real(&drive_params, drive);
     } else {
         //get_drive_params_uefi(&drive_params, Image_Handle, SystemTable);
     }
+    #else
+    drive_params.total_sectors = total_blocks;
+    drive_params.bytes_per_sector = block_size;
+    #endif
 
     uint32_t max_blocks = drive_params.total_sectors * drive_params.bytes_per_sector / BIOS_BLOCK_SIZE;
 
@@ -426,7 +469,26 @@ int mark_block_used(uint64_t block_number, uint8_t drive) {
     return result;
 }
 
+#ifdef CLI
+int read_lba(uint64_t lba, uint16_t count, void* buffer, size_t size)
+{
+    if (count == 0) {
+        fprintf(stderr, "No count specified for reading. WARNING!\n");
+        return 0;
+    }
 
+    FILE* fp = fopen(image_path, "rb");
+    if (!fp) {
+        fprintf(stderr, "Failed to open image file!\n");
+        return -1;
+    }
+
+    fseek(fp, lba * block_size, SEEK_SET);
+
+    fread(buffer, size, count, fp);
+    return 0;
+}
+#else
 int read_lba(uint64_t lba, uint16_t count, void *buffer, uint8_t drive)
 {
     PBFS_DAP dap = {
@@ -439,6 +501,7 @@ int read_lba(uint64_t lba, uint16_t count, void *buffer, uint8_t drive)
     };
     return read_lba_asm(&dap, drive) == 0;
 }
+#endif
 
 int read_lbaUEFI(EFI_LBA lba, UINTN count, void *buffer, EFI_HANDLE image, EFI_SYSTEM_TABLE *SystemTable)
 {
@@ -523,7 +586,43 @@ int read_fn(const char *filename, uint16_t count_to_repeat_buffer, void *buffer,
     return out;
 }
 
+#ifdef CLI
+int write_lba(uint64_t lba, uint16_t count, const void *buffer, size_t size)
+{
+    if (count == 0 || buffer == NULL || size == 0) {
+        fprintf(stderr, "No size specified for writing, WARNING!\n");
+        return 0;
+    }
 
+    FILE* fp = fopen(image_path, "r+b");
+
+    if (!fp) {
+        fprintf(stderr, "Failed to open image for writing...\n");
+        return -1;
+    }
+
+    size_t padded_size = ((size + block_size - 1) / block_size) * block_size;
+    unsigned char *data = calloc(padded_size, 1);  // zeroed
+    if (!data) {
+        fprintf(stderr, "Failed to allocate space for file!\n");
+        return -1;
+    }
+
+    // Copy data into buffer (calloc zeroed padded bytes)
+    memcpy(data, buffer, size);
+
+    fseek(fp, lba * block_size, SEEK_SET);
+
+    for (int i = 0; i < count; i++) {
+        fwrite(data, 1, block_size, fp);
+    }
+
+    free(data);
+
+    fclose(fp);
+    return 0;
+}
+#else
 int write_lba(uint64_t lba, uint16_t count, const void *buffer, uint8_t drive)
 {
     PBFS_DAP dap = {
@@ -536,6 +635,7 @@ int write_lba(uint64_t lba, uint16_t count, const void *buffer, uint8_t drive)
     };
     return write_lba_asm(&dap, drive) == 0;
 }
+#endif
 
 EFI_STATUS write_lbaUEFI(EFI_LBA lba, UINTN block_count, void *buffer, EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
@@ -547,15 +647,19 @@ int write_ba(uint64_t block_addr, uint16_t count, const void *buffer, uint8_t dr
     return write_lba(block_addr + Data_block_address, count, buffer, drive);
 }
 
-int write_fn(const char *filename, void *data, PBFS_Permissions *permissions, char **permission_granted_files, int file_count, uint8_t drive) {
+int write_fn(const char *filename, const char *data, PBFS_Permissions *permissions, char **permission_granted_files, int file_count, uint8_t drive) {
     // 1. Verify the drive header
     PBFS_Header* pbfs_header = malloc(block_size);
 
     if (pbfs_header == NULL) {
         return AllocFailed;
     }
-
-    int out = read_lba(Data_block_address, 1, pbfs_header, drive);
+    
+    #ifdef CLI
+    int out = read_lba(Header_block_address, 1, pbfs_header, drive);
+    #else
+    int out = read_lba(Header_block_address, 1, pbfs_header, sizeof(PBFS_Header));
+    #endif
     if (out != EXIT_SUCCESS) {
         free(pbfs_header);
         return out;
@@ -564,7 +668,8 @@ int write_fn(const char *filename, void *data, PBFS_Permissions *permissions, ch
     if (strncmp(pbfs_header->Magic, PBFS_MAGIC, 6) != 0) {
         return HeaderVerificationFailed; // Invalid drive header
     }
-
+    recalculate_layout(pbfs_header->Entries, 0, NULL, NULL, drive);
+    
     // 2. Check if the file is in the file list
     int file_index = find_file_in_file_list(filename);
     if (file_index != FileNotFound) {
@@ -572,7 +677,8 @@ int write_fn(const char *filename, void *data, PBFS_Permissions *permissions, ch
     }
 
     // 4. Check the bitmap for a continuous range of (block_span of the file data + 1) free blocks
-    uint64_t block_span = (uint64_t)(sizeof(data) / block_size); // Calculate the number of blocks needed for the data
+    uint64_t datalen = (uint64_t)strlen(data);
+    uint64_t block_span = (uint64_t)((datalen + block_size - 1) / block_size); // Calculate the number of blocks needed for the data
     uint64_t lba = find_free_lba_span(block_span + 1, drive, NULL, NULL);
     if (lba == INVALID_LBA) {
         return NoSpaceAvailable; // Not enough space available
@@ -605,8 +711,12 @@ int write_fn(const char *filename, void *data, PBFS_Permissions *permissions, ch
     }
 
     // Combine the buffers into metadata buffer
-    size_t sizes[] = { sizeof(&file_table_entry), sizeof(&permission_table_entry), sizeof(file_tree_entries) };
-    void *metadata_buffers = { (PBFS_FileTableEntry*)&file_table_entry, (PBFS_PermissionTableEntry*)&permission_table_entry, (PBFS_FileTreeEntry*)file_tree_entries };
+    size_t sizes[] = { sizeof(PBFS_FileTableEntry), sizeof(PBFS_PermissionTableEntry), sizeof(PBFS_FileTreeEntry) * file_count };
+    void *metadata_buffers[] = {
+        (void*)&file_table_entry,
+        (void*)&permission_table_entry,
+        (void*)file_tree_entries
+    };
 
     // Combine
     void* metadata_buffer = combine_buffers(metadata_buffers, sizes, 3);
@@ -616,11 +726,23 @@ int write_fn(const char *filename, void *data, PBFS_Permissions *permissions, ch
     }
 
     // 7. Write the entries to the first free block in the found range
+    size_t metasize = sizes[0] + sizes[1] + sizes[2];
+
+    #ifdef CLI
+    write_lba(lba, 1, metadata_buffer, metasize);
+    for (int i = 0; i < block_span; i++) {
+        int offset = i * block_size;
+        size_t write_size = (datalen - offset >= block_size) ? block_size : (datalen - offset);
+        write_lba (lba + 1 + i, 1, (char*)(data + offset), write_size);
+    } 
+    #else
     write_lba(lba, 1, metadata_buffer, drive); // Write metadata
-
     // Now write the file data
-    write_lba(lba + 1, block_span, data, drive); // Write the actual file data
-
+    for (int i = 0; i < block_span; i++) {
+        int offset = i * block_size;
+        write_lba(lba + 1 + i, 1, (char*)(data + offset), drive); // Write the actual file data
+    }
+    #endif
     // Free allocated memory
     free(file_tree_entries);
 
@@ -629,6 +751,14 @@ int write_fn(const char *filename, void *data, PBFS_Permissions *permissions, ch
     for (int i = 0; i < block_span; i++) {
         mark_block_used(lba + i, drive);
     }
+
+    uint32_t entries = pbfs_header->Entries;
+    pbfs_header->Entries = entries + 1;
+    #ifdef CLI
+    write_lba(Header_block_address, 1, (char*)pbfs_header, sizeof(PBFS_Header));
+    #else
+    write_lba(Header_block_address, 1, (char*)pbfs_header, drive);
+    #endif
 
     return EXIT_SUCCESS; // Successfully written
 }
@@ -648,6 +778,10 @@ int write_fn(const char *filename, void *data, PBFS_Permissions *permissions, ch
 #define PBFS_MARK_BLOCK_USED mark_block_used
 #define PBFS_MARK_BLOCK_FREE mark_block_free
 #define PBFS_IS_BLOCK_FREE is_block_free
+
+#ifdef CLI
+#define PBFS_SET_IMAGE_PATH set_image_path
+#endif
 
 
 // Read
