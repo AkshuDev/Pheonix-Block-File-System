@@ -1,8 +1,5 @@
 #pragma once
 
-#include <stdint.h>
-#include <stddef.h>
-
 /* UEFI typedefs */
 #include <pefi.h>
 

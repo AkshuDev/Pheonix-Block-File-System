@@ -13,6 +13,52 @@
 
 #define BYTES_PER_BITMAP_BLOCK 512
 
+#define PBFS_MAX_MEMORY 0x10000 // 64 KB pool
+uint8_t PBFS_memory_pool[PBFS_MAX_MEMORY];
+uint32_t PBFS_memory_offset = 0;
+
+void* malloc(uint32_t size) {
+    if (PBFS_memory_offset + size > PBFS_MAX_MEMORY) return NULL;
+    void* ptr = &PBFS_memory_pool[PBFS_memory_offset];
+    PBFS_memory_offset += size;
+    return ptr;
+}
+
+void* calloc(uint32_t num, uint32_t size) {
+    uint32_t total = num * size;
+    void* ptr = malloc(total);
+    if (ptr) {
+        for (uint32_t i = 0; i < total; i++) ((uint8_t*)ptr)[i] = 0;
+    }
+    return ptr;
+}
+
+void* memcpy(void* dest, const void* src, uint32_t n) {
+    uint8_t* d = (uint8_t*)dest;
+    const uint8_t* s = (const uint8_t*)src;
+    for (uint32_t i = 0; i < n; i++) {
+        d[i] = s[i];
+    }
+    return dest;
+}
+
+void* memmove(void* dest, const void* src, uint32_t n) {
+    uint8_t* d = (uint32_t*)dest;
+    const uint8_t* s = (const uint8_t*)src;
+    if (d < s) {
+        for (uint32_t i = 0; i < n; i++) d[i] = s[i];
+    } else {
+        for (uint32_t i = n - 1; i >= 0; i--) d[i] = s[i];
+    }
+    return dest;
+}
+
+void* memset(void* dest, uint8_t value, uint32_t n) {
+    uint8_t* d = (uint8_t*)dest;
+    for (uint32_t i = 0; i < n; i++) d[i] = value;
+    return dest;
+}
+
 int block_size = 512; // The size of a single block in bytes
 int total_blocks = 2048; // Total number of blocks
 int disk_size = 512 * 2048;
@@ -759,6 +805,8 @@ int write_fn(const char *filename, const char *data, PBFS_Permissions *permissio
     #else
     write_lba(Header_block_address, 1, (char*)pbfs_header, drive);
     #endif
+
+    free(pbfs_header);
 
     return EXIT_SUCCESS; // Successfully written
 }

@@ -124,8 +124,9 @@ int main(int argc, char** argv) {
 
     int create_image = 0;
     int format_image = 0;
-
     int add_file = 0;
+    int add_bootloader = 0;
+
     char* filename = "";
     char* filepath = "";
     PBFS_Permissions permissions = {
@@ -175,6 +176,15 @@ int main(int argc, char** argv) {
             filepath = argv[i + 2];
             i++;
             i++;
+        } else if (strncmp(argv[i], "-bootloader", 11) == 0) {
+            // Add a bootloader
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> -bootloader <filepath>\n");
+                return InvalidUsage;
+            }
+            add_bootloader = 1;
+            filepath = argv[i + 1];
+            i++;
         } else {
             printf("Unknown command: %s\n", argv[i]);
             return InvalidArgument;
@@ -209,10 +219,14 @@ int main(int argc, char** argv) {
         FILE* fp = fopen(filepath, "rb");
         if (!fp){
             perror("Failed to open file!\n");
-            return -1;
+            return FileError;
         }
         fseek(fp, 0, SEEK_END);
         size_t size = ftell(fp);
+        if (size < 1) {
+            fprintf(stderr, "File has no size!\n");
+            return FileError;
+        }
         rewind(fp);
         char* data = malloc(size);
         fread(data, size, 1, fp);
@@ -225,6 +239,44 @@ int main(int argc, char** argv) {
             perror("An Error Occurred!\n");
             return out;
         }
+        free(data);
+    }
+    if (add_bootloader) {
+        printf("Adding bootloader [%s] to Image...\n", filepath);
+        FILE *fp = fopen(filepath, "rb");
+        if (!fp) {
+            perror("Failed to open file!\n");
+            return FileError;
+        }
+        fseek(fp, 0, SEEK_END);
+        size_t size = ftell(fp);
+        printf("Size of bootloader: %zu\n", size);
+        if (size != block_size) {
+            fprintf(stderr, "File doesn't match block size!\n");
+            return FileError;
+        }
+        uint8_t* data = (uint8_t*)calloc(1, block_size);
+        size_t read_bytes = fread(data, 1, size, fp); // fread might fail on binary data so we don't check for read_bytes being 0
+        fclose(fp);
+
+        printf("Read %zu bytes!\n");
+        printf("First 20 bytes of file -\n");
+        for (int i = 0; i < 20; i++) {
+            printf("%02X ", data[i]);
+        }
+        printf("\n");
+
+        FILE* disk = fopen(image, "r+b");
+        if (!disk) {
+            perror("Failed to open image!\n");
+            return FileError;
+        }
+
+        fseek(disk, 0, SEEK_SET);
+        fwrite(data, 1, block_size, disk);
+        fflush(disk);
+        fclose(disk);
+
         free(data);
     }
 

@@ -1,0 +1,54 @@
+# Vars
+builddir := ../build-fs
+objdir := $(builddir)/objs
+
+tools := ../tools
+disk_io := $(tools)/disk_io.asm
+disk_params := $(tools)/disk_params.asm
+pbfs_btl_stub := pbfs_btl_stub.c
+
+disk_io_o := $(objdir)/disk_io.o
+disk_params_o := $(objdir)/disk_params.o
+pbfs_btl_stub_o := $(objdir)/pbfs_btl_stub.o
+
+CC := gcc
+CFLAGS := -nostdlib -m32 -ffreestanding -fno-pic -fno-stack-protector
+
+LD := ld
+LDFLAGS := -m elf_i386 -Ttext 0x1000 -nostdlib --oformat binary
+
+ASM := nasm 
+ASMFLAGS := -f elf32
+AR := ar
+
+TARGET := $(builddir)/libpbfs_btl_stub.a
+
+.PHONY: all clean
+
+all: $(builddir) $(objdir) $(TARGET)
+
+$(builddir):
+	@mkdir -p $(builddir)
+
+$(objdir):
+	@mkdir -p $(objdir)
+
+$(TARGET): $(disk_params_o) $(disk_io_o) $(pbfs_btl_stub_o)
+	@echo "Creating PBFS Bootloader Stub for static linking..."
+	$(AR) rsc $(TARGET) $(disk_params_o) $(disk_io_o) $(pbfs_btl_stub_o)
+
+$(pbfs_btl_stub_o): $(pbfs_btl_stub)
+	@echo "Compiling stub..."
+	$(CC) $(CFLAGS) -c $(pbfs_btl_stub) -o $(pbfs_btl_stub_o)
+
+$(disk_params_o): $(disk_params)
+	@echo "Assembling..."
+	$(ASM) $(ASMFLAGS) $(disk_params) -o $(disk_params_o)
+
+$(disk_io_o): $(disk_io)
+	@echo "Assembling..."
+	$(ASM) $(ASMFLAGS) $(disk_io) -o $(disk_io_o)
+
+clean:
+	@echo "Cleaning..."
+	@rm -rf $(builddir)
