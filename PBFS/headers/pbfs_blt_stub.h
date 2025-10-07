@@ -21,16 +21,49 @@ typedef struct {
     uint16_t offset;
     uint16_t segment;
     uint64_t lba;
-} __attribute__((packed)) PBFS_DAP;
+} __attribute__((packed)) PBFS_DAP; // 64-bit cause BIOS can do it
 #pragma pack(pop)
+
+#pragma pack(push, 1)
+typedef struct {
+    uint64_t lba;
+    uint16_t count;
+} __attribute__((packed)) PBFS_DP; // PBFS DP (Disk Packet) differs from DAP as the DP supports protected/long mode
 
 extern int read_lba_asm(PBFS_DAP* dap, uint8_t drive);
 extern int write_lba_asm(PBFS_DAP* dap, uint8_t drive);
 extern uint16_t get_drive_params_real(uint16_t buffer_seg_offset, uint8_t drive);
 
-#define read_lba read_lba_asm
-#define write_lba write_lba_asm
-#define get_drive_params get_drive_params_real
+#define read_lba_real read_lba_asm
+#define write_lba_real write_lba_asm
+#define get_drive_params_real get_drive_params_real
+
+// Define I/O port addresses for the primary ATA bus.
+#define ATA_PRIMARY_BASE 0x1F0
+#define ATA_PRIMARY_CONTROL 0x3F6
+
+// I/O ports relative to the base address
+#define ATA_REG_DATA 0x00
+#define ATA_REG_ERROR 0x01
+#define ATA_REG_SECTOR_COUNT 0x02
+#define ATA_REG_LBA_LOW 0x03
+#define ATA_REG_LBA_MID 0x04
+#define ATA_REG_LBA_HIGH 0x05
+#define ATA_REG_DRIVE_HEAD 0x06
+#define ATA_REG_COMMAND 0x07
+#define ATA_REG_STATUS 0x07
+
+// Status Register Bits
+#define ATA_SR_BSY 0x80 // Busy
+#define ATA_SR_DRDY 0x40 // Drive Ready
+#define ATA_SR_DF 0x20 // Device Fault
+#define ATA_SR_DRQ 0x08 // Data Request Ready
+#define ATA_SR_ERR 0x01 // Error
+
+// ATA Commands
+#define ATA_CMD_READ_PIO_EXT 0x24 // LBA48 Read
+#define ATA_CMD_WRITE_PIO_EXT 0x34 // LBA48 Write
+#define ATA_CMD_FLUSH_EXT 0xEA // LBA48 Flush
 
 // Developer friendly zone
 #define VIDEO_MEMORY 0xB8000
@@ -69,6 +102,141 @@ static inline void outb(uint16_t port, uint8_t value) {
         :
         : "a"(value),"Nd"(port)
     );
+}
+
+static inline uint8_t inb(uint16_t port) {
+    uint8_t result;
+    __asm__ __volatile__ (
+        "inb %1, %0"
+        : "=a"(result)
+        : "dN"(port)
+    );
+    return result;
+}
+
+static inline uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    __asm__ __volatile__(
+        "inw %1, %0"
+        : "=a"(ret) 
+        : "dN"(port)
+    );
+    return ret;
+}
+
+static inline void outw(uint16_t port, uint16_t val) {
+    __asm__ __volatile__(
+        "outw %0, %1" 
+        : 
+        : "a"(val),"dN"(port)
+    );
+}
+
+static inline void insw(uint16_t port, void* buffer, uint32_t count) {
+    __asm__ __volatile__(
+        "rep insw" 
+        : "+D"(buffer), "+c"(count) 
+        : "d"(port) 
+        : "memory"
+    );
+}
+
+static inline void outsw(uint16_t port, const void* buffer, uint32_t count) {
+    __asm__ __volatile__(
+        "rep outsw" 
+        : "+S"(buffer), "+c"(count) 
+        : "d"(port)
+    );
+}
+
+static inline void _atat_wait_ready(void) {
+    for (int i = 0; i < 4; i++) {
+        inb(ATA_PRIMARY_STATUS);
+    }
+
+    // Wait for the BSY bit to clear and DRDY bit to set.
+    while ((inb(ATA_PRIMARY_STATUS) & (ATA_SR_BSY | ATA_SR_DRDY)) != ATA_SR_DRDY);
+}
+
+static inline int pm_read_sectors(PBFS_DP* dp, void* buffer) {
+    _atat_wait_ready();
+
+    // Send the LBA48 and sector count high byte first
+    outb(ATA_PRIMARY_CONTROL, 0x00) // Clear high order bytes
+    outb(ATA_PRIMARY_SECTOR_COUNT, (dp->count >> 8) & 0xFF);
+    outb(ATA_PRIMARY_LBA_LOW, (dp->lba >> 24) & 0xFF);
+    outb(ATA_PRIMARY_LBA_MID, (dp->lba >> 32) & 0xFF);
+    outb(ATA_PRIMARY_LBA_HIGH, (dp->lba >> 40) & 0xFF);
+
+    // Send the LBA48 low bytes and sector count low byte.
+    outb(ATA_PRIMARY_DRIVE_HEAD, 0x40); // Select master drive with LBA mode.
+    outb(ATA_PRIMARY_SECTOR_COUNT, dp->count & 0xFF);
+    outb(ATA_PRIMARY_LBA_LOW, dp->lba & 0xFF);
+    outb(ATA_PRIMARY_LBA_MID, (dp->lba >> 8) & 0xFF);
+    outb(ATA_PRIMARY_LBA_HIGH, (dp->lba >> 16) & 0xFF);
+
+    // Issue the LBA48 Read command.
+    outb(ATA_PRIMARY_COMMAND, ATA_CMD_READ_PIO_EXT);
+
+    // Read each sector.
+    for (int i = 0; i < dp->count; i++) {
+        ata_wait_ready();
+        uint8_t status = inb(ATA_PRIMARY_STATUS);
+
+        // Check for errors.
+        if (status & ATA_SR_ERR) { // Error
+            return -1;
+        }
+
+        // Wait for Data Request Ready.
+        while (!(inb(ATA_PRIMARY_STATUS) & ATA_SR_DRQ));
+
+        // Read 256 words (512 bytes) into the buffer.
+        insw(ATA_PRIMARY_DATA, (uint8_t*)buffer + (uint32_t)i * 512, 256);
+    }
+
+    return 0; // Success
+}
+
+static inline int pm_write_sectors(PBFS_DP* dp, const void* buffer) {
+    ata_wait_ready();
+
+    // Same as read
+    outb(ATA_PRIMARY_CONTROL, 0x00);
+    outb(ATA_PRIMARY_SECTOR_COUNT, (dp->count >> 8) & 0xFF);
+    outb(ATA_PRIMARY_LBA_LOW, (dp->lba >> 24) & 0xFF);
+    outb(ATA_PRIMARY_LBA_MID, (dp->lba >> 32) & 0xFF);
+    outb(ATA_PRIMARY_LBA_HIGH, (dp->lba >> 40) & 0xFF);
+
+    outb(ATA_PRIMARY_DRIVE_HEAD, 0x40);
+    outb(ATA_PRIMARY_SECTOR_COUNT, dp->count & 0xFF);
+    outb(ATA_PRIMARY_LBA_LOW, dp->lba & 0xFF);
+    outb(ATA_PRIMARY_LBA_MID, (dp->lba >> 8) & 0xFF);
+    outb(ATA_PRIMARY_LBA_HIGH, (dp->lba >> 16) & 0xFF);
+
+    // Issue the LBA48 Write command.
+    outb(ATA_PRIMARY_COMMAND, ATA_CMD_WRITE_PIO_EXT);
+
+    // Write each sector.
+    for (int i = 0; i < dp->count; i++) {
+        ata_wait_ready();
+        uint8_t status = inb(ATA_PRIMARY_STATUS);
+
+        if (status & ATA_SR_ERR) {
+            return -1;
+        }
+
+        while (!(inb(ATA_PRIMARY_STATUS) & ATA_SR_DRQ));
+
+        // Write 256 words (512 bytes) from the buffer.
+        outsw(ATA_PRIMARY_DATA, (uint8_t*)buffer + (uint32_t)i * 512, 256);
+    }
+
+    // Flush the cache to ensure data is written to disk.
+    outb(ATA_PRIMARY_COMMAND, ATA_CMD_FLUSH_EXT);
+    ata_wait_ready();
+
+    return 0; // Success
 }
 
 static inline void pm_clear_screen(PM_Cursor_t* cursor) {
@@ -151,3 +319,5 @@ static inline void pm_printf(PM_Cursor_t* cursor, const char* fmt, int first_arg
         }
     }
 }
+
+static inline 
