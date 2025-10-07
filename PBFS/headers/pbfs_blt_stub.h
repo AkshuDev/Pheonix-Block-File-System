@@ -65,6 +65,18 @@ extern uint16_t get_drive_params_real(uint16_t buffer_seg_offset, uint8_t drive)
 #define ATA_CMD_WRITE_PIO_EXT 0x34 // LBA48 Write
 #define ATA_CMD_FLUSH_EXT 0xEA // LBA48 Flush
 
+// ATA Ports
+#define ATA_PRIMARY_DATA 0x1F0
+#define ATA_PRIMARY_ERROR 0x1F1
+#define ATA_PRIMARY_SECTOR_COUNT 0x1F2
+#define ATA_PRIMARY_LBA_LOW 0x1F3
+#define ATA_PRIMARY_LBA_MID 0x1F4
+#define ATA_PRIMARY_LBA_HIGH 0x1F5
+#define ATA_PRIMARY_DRIVE_HEAD 0x1F6
+#define ATA_PRIMARY_COMMAND 0x1F7
+#define ATA_PRIMARY_STATUS 0x1F7 // Status register is at the same address as Command
+
+
 // Developer friendly zone
 #define VIDEO_MEMORY 0xB8000
 #define VIDEO_WIDTH 80
@@ -149,7 +161,7 @@ static inline void outsw(uint16_t port, const void* buffer, uint32_t count) {
     );
 }
 
-static inline void _atat_wait_ready(void) {
+static inline void _ata_wait_ready(void) {
     for (int i = 0; i < 4; i++) {
         inb(ATA_PRIMARY_STATUS);
     }
@@ -159,10 +171,10 @@ static inline void _atat_wait_ready(void) {
 }
 
 static inline int pm_read_sectors(PBFS_DP* dp, void* buffer) {
-    _atat_wait_ready();
+    _ata_wait_ready();
 
     // Send the LBA48 and sector count high byte first
-    outb(ATA_PRIMARY_CONTROL, 0x00) // Clear high order bytes
+    outb(ATA_PRIMARY_CONTROL, 0x00); // Clear high order bytes
     outb(ATA_PRIMARY_SECTOR_COUNT, (dp->count >> 8) & 0xFF);
     outb(ATA_PRIMARY_LBA_LOW, (dp->lba >> 24) & 0xFF);
     outb(ATA_PRIMARY_LBA_MID, (dp->lba >> 32) & 0xFF);
@@ -180,7 +192,7 @@ static inline int pm_read_sectors(PBFS_DP* dp, void* buffer) {
 
     // Read each sector.
     for (int i = 0; i < dp->count; i++) {
-        ata_wait_ready();
+        _ata_wait_ready();
         uint8_t status = inb(ATA_PRIMARY_STATUS);
 
         // Check for errors.
@@ -199,7 +211,7 @@ static inline int pm_read_sectors(PBFS_DP* dp, void* buffer) {
 }
 
 static inline int pm_write_sectors(PBFS_DP* dp, const void* buffer) {
-    ata_wait_ready();
+    _ata_wait_ready();
 
     // Same as read
     outb(ATA_PRIMARY_CONTROL, 0x00);
@@ -219,7 +231,7 @@ static inline int pm_write_sectors(PBFS_DP* dp, const void* buffer) {
 
     // Write each sector.
     for (int i = 0; i < dp->count; i++) {
-        ata_wait_ready();
+        _ata_wait_ready();
         uint8_t status = inb(ATA_PRIMARY_STATUS);
 
         if (status & ATA_SR_ERR) {
@@ -234,7 +246,7 @@ static inline int pm_write_sectors(PBFS_DP* dp, const void* buffer) {
 
     // Flush the cache to ensure data is written to disk.
     outb(ATA_PRIMARY_COMMAND, ATA_CMD_FLUSH_EXT);
-    ata_wait_ready();
+    _ata_wait_ready();
 
     return 0; // Success
 }
