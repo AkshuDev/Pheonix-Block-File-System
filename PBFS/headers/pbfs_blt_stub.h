@@ -108,6 +108,7 @@ typedef struct {
     PM_Colors_t bg;
 } PM_Cursor_t;
 
+// Output a single byte to a port
 static inline void outb(uint16_t port, uint8_t value) {
     __asm__ __volatile__ (
         "outb %0, %1"
@@ -116,6 +117,7 @@ static inline void outb(uint16_t port, uint8_t value) {
     );
 }
 
+// Take input of 1 byte value from port
 static inline uint8_t inb(uint16_t port) {
     uint8_t result;
     __asm__ __volatile__ (
@@ -126,6 +128,7 @@ static inline uint8_t inb(uint16_t port) {
     return result;
 }
 
+// Take input of 2 byte value from port
 static inline uint16_t inw(uint16_t port) {
     uint16_t ret;
     __asm__ __volatile__(
@@ -136,6 +139,7 @@ static inline uint16_t inw(uint16_t port) {
     return ret;
 }
 
+// Output a 2 byte value to port
 static inline void outw(uint16_t port, uint16_t val) {
     __asm__ __volatile__(
         "outw %0, %1" 
@@ -144,6 +148,7 @@ static inline void outw(uint16_t port, uint16_t val) {
     );
 }
 
+// Take input from port
 static inline void insw(uint16_t port, void* buffer, uint32_t count) {
     __asm__ __volatile__(
         "rep insw" 
@@ -153,6 +158,7 @@ static inline void insw(uint16_t port, void* buffer, uint32_t count) {
     );
 }
 
+// Output buffer in port
 static inline void outsw(uint16_t port, const void* buffer, uint32_t count) {
     __asm__ __volatile__(
         "rep outsw" 
@@ -161,6 +167,7 @@ static inline void outsw(uint16_t port, const void* buffer, uint32_t count) {
     );
 }
 
+// Wait for ATA (PRIVATE DO NOT USE UNLESS YOU KNOW WHAT YOU ARE DOING)
 static inline void _ata_wait_ready(void) {
     for (int i = 0; i < 4; i++) {
         inb(ATA_PRIMARY_STATUS);
@@ -170,6 +177,7 @@ static inline void _ata_wait_ready(void) {
     while ((inb(ATA_PRIMARY_STATUS) & (ATA_SR_BSY | ATA_SR_DRDY)) != ATA_SR_DRDY);
 }
 
+// Read using ATA (slow for modern disks but fast enough for bootloader/protected mode)
 static inline int pm_read_sectors(PBFS_DP* dp, void* buffer) {
     _ata_wait_ready();
 
@@ -210,6 +218,7 @@ static inline int pm_read_sectors(PBFS_DP* dp, void* buffer) {
     return 0; // Success
 }
 
+// Write using ATA (slow for modern disks but fast enough for bootloader/protected mode)
 static inline int pm_write_sectors(PBFS_DP* dp, const void* buffer) {
     _ata_wait_ready();
 
@@ -251,6 +260,7 @@ static inline int pm_write_sectors(PBFS_DP* dp, const void* buffer) {
     return 0; // Success
 }
 
+// Clear screen (VIDEO MEMORY)
 static inline void pm_clear_screen(PM_Cursor_t* cursor) {
     uint16_t* vid = (uint16_t*)VIDEO_MEMORY;
     uint16_t attr = (cursor->bg << 4) | cursor->fg;
@@ -259,6 +269,7 @@ static inline void pm_clear_screen(PM_Cursor_t* cursor) {
     cursor->y = 0;
 }
 
+// Sets the cursor struct (changes cursor location as well)
 static inline void pm_set_cursor(PM_Cursor_t* cursor, uint16_t x, uint16_t y) {
     uint16_t pos = y * VIDEO_WIDTH + x;
     // high byte
@@ -273,11 +284,20 @@ static inline void pm_set_cursor(PM_Cursor_t* cursor, uint16_t x, uint16_t y) {
     cursor->y = y;
 }
 
+// Disable the cursor
 static inline void pm_disable_cursor() {
     outb(0x3D4, 0x0A);
     outb(0x3D5, 0x20); // disable
 }
 
+// Seria out a single character
+static inline void serial_put_char(char c) {
+    // Wait for the serial port to be ready
+    while ((inb(0x3F8 + 5) & 0x20) == 0); // Line Status Register, bit 5 = THR empty
+    outb(0x3F8, c);
+}
+
+// Print a single character
 static inline void pm_put_char(PM_Cursor_t* cursor, char c) {
     uint16_t* vid = (uint16_t*)VIDEO_MEMORY;
     uint16_t attr = (cursor->bg << 4) | cursor->fg;
@@ -285,17 +305,21 @@ static inline void pm_put_char(PM_Cursor_t* cursor, char c) {
         cursor->x = 0;
         uint16_t y = cursor->y + 1;
         pm_set_cursor(cursor, cursor->x, y);
+        serial_put_char(c);
         return;
     }
     vid[cursor->y * VIDEO_WIDTH + cursor->x] = ((uint16_t)attr << 8) | c;
     uint16_t x = cursor->x + 1;
     pm_set_cursor(cursor, x, cursor->y);
+    serial_put_char(c);
 }
 
+// Print string
 static inline void pm_print(PM_Cursor_t* cursor, const char* str) {
     while (*str) pm_put_char(cursor, *str++);
 }
 
+// Convert integer to string
 static inline void pm_itoa(int val, char* buf) {
     int i = 0;
     if (val == 0) { buf[i++] = '0'; buf[i] = 0; return; }
@@ -309,6 +333,7 @@ static inline void pm_itoa(int val, char* buf) {
     buf[i] = 0;
 }
 
+// Print with format capabilities
 static inline void pm_printf(PM_Cursor_t* cursor, const char* fmt, int first_arg_addr) {
     char* argp = (char*)&first_arg_addr;
     char ch;
@@ -332,4 +357,82 @@ static inline void pm_printf(PM_Cursor_t* cursor, const char* fmt, int first_arg
     }
 }
 
-static inline 
+// Scan Codes (SIMPLE FOR BOOTLOADER/PROTECTED MODE)
+static const char scan_to_ascii[128] = {
+    0,  27, '1','2','3','4','5','6','7','8','9','0','-','=', '\b',
+    '\t','q','w','e','r','t','y','u','i','o','p','[',']','\n',0,
+    'a','s','d','f','g','h','j','k','l',';','\'','`',0,'\\',
+    'z','x','c','v','b','n','m',',','.','/',0,'*',0,' ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+};
+
+// Reads via PS2
+static inline uint8_t pm_ps2_read_scan(void) {
+    while (!(inb(0x64) & 1)); // wait for data
+    return inb(0x60);
+}
+
+// Read a line
+void pm_read_line(char* buf, int max_len, PM_Cursor_t* cursor) {
+    int idx = 0;
+    for (;;) {
+        uint8_t sc = pm_ps2_read_scan(); // read a scan code
+        char c = 0;
+
+        // Ignore key releases (high bit set)
+        if (sc & 0x80) continue;
+
+        c = scan_to_ascii[sc];
+        if (!c) continue;
+
+        if (c == '\n') { // Enter
+            buf[idx] = 0;
+            pm_put_char(cursor, '\n');
+            break;
+        } else if (c == '\b') { // Backspace
+            if (idx > 0) {
+                idx--;
+                // Move cursor back visually
+                if (cursor->x == 0 && cursor->y > 0) {
+                    cursor->y--;
+                    cursor->x = VIDEO_WIDTH - 1;
+                } else if (cursor->x > 0) {
+                    cursor->x--;
+                }
+                pm_set_cursor(cursor, cursor->x, cursor->y);
+                pm_put_char(cursor, ' '); // erase
+                pm_set_cursor(cursor, cursor->x, cursor->y);
+            }
+        } else {
+            if (idx < max_len - 1) {
+                buf[idx++] = c;
+                pm_put_char(cursor, c); // echo typed char
+            }
+        }
+    }
+}
+
+// Compare two null-terminated strings
+static inline int str_eq(const char* a, const char* b) {
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++; b++;
+    }
+    return *a == *b; // both must be 0
+}
+
+// Compare first n chars of two strings
+static inline int str_n_eq(const char* a, const char* b, int n) {
+    for (int i = 0; i < n; i++) {
+        if (a[i] != b[i]) return 0;
+        if (a[i] == 0) return 1; // match shorter string
+    }
+    return 1;
+}
+
+// Find length of string
+static inline int str_len(const char* s) {
+    int len = 0;
+    while (*s++) len++;
+    return len;
+}
+
