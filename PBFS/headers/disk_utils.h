@@ -15,6 +15,7 @@
 
 #define BYTES_PER_BITMAP_BLOCK 512
 
+#ifndef CLI
 #define PBFS_MAX_MEMORY 0x10000 // 64 KB pool
 uint8_t PBFS_memory_pool[PBFS_MAX_MEMORY];
 uint32_t PBFS_memory_offset = 0;
@@ -60,6 +61,7 @@ void* memset(void* dest, uint8_t value, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) d[i] = value;
     return dest;
 }
+#endif
 
 int block_size = 512; // The size of a single block in bytes
 int total_blocks = 2048; // Total number of blocks
@@ -87,9 +89,11 @@ size_t file_list_capacity = 0;  // how many slots are allocated
 EFI_BLOCK_IO_PROTOCOL* GBlockIo = NULL;
 
 // Asm imports
+#ifndef CLI
 extern uint16_t CALLCONV get_drive_params_real_asm(uint16_t buffer_seg_offset, uint8_t drive);
 extern int CALLCONV read_lba_asm(PBFS_DAP *dap, uint8_t drive);
 extern int CALLCONV write_lba_asm(PBFS_DAP *dap, uint8_t drive);
+#endif
 
 // Forward Declared funcs for global use
 // Tools
@@ -280,11 +284,16 @@ int is_real_mode()
 
 int get_drive_params_real(DriveParameters* info, uint8_t drive)
 {
+    #ifndef CLI
     if (is_real_mode() == 0) return -100; // Protected mode - not supported in this func
 
     info->size = 0x1E;
-
+    
     return get_drive_params_real_asm((uint16_t)(uintptr_t)info, drive);
+    #else
+    info->size = 0x1E;
+    return 0;
+    #endif
 }
 
 uint64_t get_drive_total_blocks(uint64_t drive_size_in_bytes, uint32_t block_size)
@@ -305,9 +314,11 @@ uint64_t get_drive_size(DriveParameters* disk_info, uint8_t drive)
     //  DS:SI = pointer to buffer (must be 30+ bytes)
 
     // BIOS will write to this buffer:
-
+    #ifndef CLI
     int success = get_drive_params_real(disk_info, drive);
-
+    #else
+    int success = 0;
+    #endif
     if (!success)
         return 0;
 

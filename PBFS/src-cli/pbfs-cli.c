@@ -5,7 +5,6 @@
 #include "disk_utils.h"
 
 #include <time.h>
-#include <stdint.h>
 
 static size_t align_up(size_t value, size_t alignment) {
     if (alignment == 0) return value;
@@ -67,7 +66,11 @@ int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, 
     // Bitmap stuff
     uint64_t bitmap_size = (uint64_t)align_up(total_blocks, block_size);
     uint64_t bitmap_blocks = (bitmap_size + 511) / 512;  // Round up to blocks
-    file_data_offset = (block_size * 2) + bitmap_size
+    file_data_offset = (block_size * 2) + bitmap_size;
+
+    if (kernel_table == 1) {
+        file_data_offset += block_size * 1;
+    }
 
     header->FileTableOffset = file_data_offset;
     header->Entries = 0;
@@ -208,18 +211,19 @@ int main(int argc, char** argv) {
                 printf("Usage: pbfs-cli <image> -partboot <blocks>\n");
                 return InvalidUsage;
             }
-            bootpart_size = argv[i + 1];
+            bootpartsize = (int)argv[i + 1];
             bootpart = 1;
             i++;
         } else if (strcmp(argv[i], "-partkernel") == 0) {
             kerneltable = 1;
-        } else if (strncmp(argv[i], "-kernel")) {
+        } else if (strncmp(argv[i], "-kernel", 7) == 0) {
             if (i + 2 > argc) {
                 printf("Usage: pbfs-cli <image> -kernel <filepath>\n");
                 return InvalidUsage;
             }
             add_kernel = 1;
             filepath = argv[i + 1];
+            i++;
         } else {
             printf("Unknown command: %s\n", argv[i]);
             return InvalidArgument;
@@ -241,7 +245,7 @@ int main(int argc, char** argv) {
     }
     if (format_image) {
         printf("Formating Image...\n");
-        int out = pbfs_format(image, kerneltable, bootpart, bootpart_size, block_size, total_blocks);
+        int out = pbfs_format(image, kerneltable, bootpart, bootpartsize, block_size, total_blocks);
 
         if (out != EXIT_SUCCESS) {
             perror("An Error Occurred!\n");
@@ -324,10 +328,6 @@ int main(int argc, char** argv) {
         fseek(fp, 0, SEEK_END);
         size_t size = ftell(fp);
         printf("Size of kernel: %zu\n", size);
-        if (size != block_size) {
-            fprintf(stderr, "File doesn't match block size!\n");
-            return FileError;
-        }
         uint8_t* data = (uint8_t*)calloc(1, size);
         size_t read_bytes = fread(data, sizeof(uint8_t), size, fp); // fread might fail on binary data so we don't check for read_bytes being 0
         fclose(fp);
@@ -351,7 +351,7 @@ int main(int argc, char** argv) {
         fseek(disk, block_size*2 + 3, SEEK_SET);
         PBFS_KernelEntry entry = {
             .name = "Kernel",
-            .count = (uint16_t)align_up(size, block_size);
+            .count = (uint16_t)align_up(size, block_size),
             .lba = bitmap_span + 3
         };
 

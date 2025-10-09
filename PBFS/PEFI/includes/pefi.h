@@ -2,6 +2,7 @@
 
 #define NULL ((void*)0)
 
+#ifndef CLI
 typedef signed char int8_t;
 typedef signed short int16_t;
 typedef signed int int32_t;
@@ -10,6 +11,7 @@ typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int uint32_t;
 typedef unsigned long long uint64_t;
+#endif
 
 typedef uint64_t EFI_STATUS;
 typedef void* EFI_HANDLE;
