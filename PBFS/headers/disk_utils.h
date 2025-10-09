@@ -1,8 +1,10 @@
 #ifndef DISK_UTILS_H
 #define DISK_UTILS_H
 
+#ifndef CLI
 #include "pbfs.h"
 #include "pbfs_structs.h"
+#endif
 
 #include <pefilib.h> // Includes all of PEFI
 

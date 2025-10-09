@@ -75,6 +75,11 @@ extern uint16_t get_drive_params_real(uint16_t buffer_seg_offset, uint8_t drive)
 #define ATA_PRIMARY_DRIVE_HEAD 0x1F6
 #define ATA_PRIMARY_COMMAND 0x1F7
 #define ATA_PRIMARY_STATUS 0x1F7 // Status register is at the same address as Command
+#define ATA_PRIMARY_IO 0x1F0
+#define ATA_PRIMARY_CTRL 0x3F6
+
+#define ATA_SECONDARY_IO 0x170
+#define ATA_SECONDARY_CTRL 0x376
 
 
 // Developer friendly zone
@@ -167,41 +172,60 @@ static inline void outsw(uint16_t port, const void* buffer, uint32_t count) {
     );
 }
 
-// Wait for ATA (PRIVATE DO NOT USE UNLESS YOU KNOW WHAT YOU ARE DOING)
-static inline void _ata_wait_ready(void) {
-    for (int i = 0; i < 4; i++) {
-        inb(ATA_PRIMARY_STATUS);
-    }
+// ATA
+typedef struct {
+    uint16_t io_base;
+    uint16_t ctrl_base;
+} ata_bus_t;
 
-    // Wait for the BSY bit to clear and DRDY bit to set.
-    while ((inb(ATA_PRIMARY_STATUS) & (ATA_SR_BSY | ATA_SR_DRDY)) != ATA_SR_DRDY);
+static const ata_bus_t ata_buses[2] = {
+    { ATA_PRIMARY_IO, ATA_PRIMARY_CTRL },
+    { ATA_SECONDARY_IO, ATA_SECONDARY_CTRL }
+};
+
+// Wait for ATA (PRIVATE DO NOT USE UNLESS YOU KNOW WHAT YOU ARE DOING)
+static inline void _ata_wait_ready(uint16_t io_base) {
+    uint8_t status;
+    int timeout = 100000; // ~100ms depending on CPU speed
+
+    while (timeout--) {
+        status = inb(io_base + 7);
+        if (!(status & ATA_SR_BSY) && (status & ATA_SR_DRDY))
+            return; // Ready!
+    }
 }
 
 // Read using ATA (slow for modern disks but fast enough for bootloader/protected mode)
-static inline int pm_read_sectors(PBFS_DP* dp, void* buffer) {
-    _ata_wait_ready();
+static inline int pm_read_sectors(PBFS_DP* dp, void* buffer, uint8_t drive) {
+    uint8_t bus = ((drive - 0x80) >> 1) & 1;
+    uint8_t device = (drive & 1); // 0=master,1=slave
+    uint16_t io = ata_buses[bus].io_base;
+    uint16_t ctrl = ata_buses[bus].ctrl_base;
+
+    _ata_wait_ready(io);
 
     // Send the LBA48 and sector count high byte first
-    outb(ATA_PRIMARY_CONTROL, 0x00); // Clear high order bytes
-    outb(ATA_PRIMARY_SECTOR_COUNT, (dp->count >> 8) & 0xFF);
-    outb(ATA_PRIMARY_LBA_LOW, (dp->lba >> 24) & 0xFF);
-    outb(ATA_PRIMARY_LBA_MID, (dp->lba >> 32) & 0xFF);
-    outb(ATA_PRIMARY_LBA_HIGH, (dp->lba >> 40) & 0xFF);
+    outb(ctrl, 0x00); // Clear high order bytes
+    outb(io + 2, (dp->count >> 8) & 0xFF);
+    outb(io + 3, (dp->lba >> 24) & 0xFF);
+    outb(io + 4, (dp->lba >> 32) & 0xFF);
+    outb(io + 5, (dp->lba >> 40) & 0xFF);
 
     // Send the LBA48 low bytes and sector count low byte.
-    outb(ATA_PRIMARY_DRIVE_HEAD, 0x40); // Select master drive with LBA mode.
-    outb(ATA_PRIMARY_SECTOR_COUNT, dp->count & 0xFF);
-    outb(ATA_PRIMARY_LBA_LOW, dp->lba & 0xFF);
-    outb(ATA_PRIMARY_LBA_MID, (dp->lba >> 8) & 0xFF);
-    outb(ATA_PRIMARY_LBA_HIGH, (dp->lba >> 16) & 0xFF);
+    outb(io + 6, 0x40 | (device << 4)); // Choose drive
+
+    outb(io + 2, dp->count & 0xFF);
+    outb(io + 3, dp->lba & 0xFF);
+    outb(io + 4, (dp->lba >> 8) & 0xFF);
+    outb(io + 5, (dp->lba >> 16) & 0xFF);
 
     // Issue the LBA48 Read command.
-    outb(ATA_PRIMARY_COMMAND, ATA_CMD_READ_PIO_EXT);
+    outb(io + 7, ATA_CMD_READ_PIO_EXT);
 
     // Read each sector.
     for (int i = 0; i < dp->count; i++) {
-        _ata_wait_ready();
-        uint8_t status = inb(ATA_PRIMARY_STATUS);
+        _ata_wait_ready(io);
+        uint8_t status = inb(io + 7);
 
         // Check for errors.
         if (status & ATA_SR_ERR) { // Error
@@ -209,53 +233,58 @@ static inline int pm_read_sectors(PBFS_DP* dp, void* buffer) {
         }
 
         // Wait for Data Request Ready.
-        while (!(inb(ATA_PRIMARY_STATUS) & ATA_SR_DRQ));
+        while (!(inb(io + 7) & ATA_SR_DRQ));
 
         // Read 256 words (512 bytes) into the buffer.
-        insw(ATA_PRIMARY_DATA, (uint8_t*)buffer + (uint32_t)i * 512, 256);
+        insw(io, (uint8_t*)buffer + (uint32_t)i * 512, 256);
     }
 
     return 0; // Success
 }
 
 // Write using ATA (slow for modern disks but fast enough for bootloader/protected mode)
-static inline int pm_write_sectors(PBFS_DP* dp, const void* buffer) {
-    _ata_wait_ready();
+static inline int pm_write_sectors(PBFS_DP* dp, const void* buffer, uint8_t drive) {
+    uint8_t bus = ((drive - 0x80) >> 1) & 1;
+    uint8_t device = (drive & 1);
+    uint16_t io = ata_buses[bus].io_base;
+    uint16_t ctrl = ata_buses[bus].ctrl_base;
+
+    _ata_wait_ready(io);
 
     // Same as read
-    outb(ATA_PRIMARY_CONTROL, 0x00);
-    outb(ATA_PRIMARY_SECTOR_COUNT, (dp->count >> 8) & 0xFF);
-    outb(ATA_PRIMARY_LBA_LOW, (dp->lba >> 24) & 0xFF);
-    outb(ATA_PRIMARY_LBA_MID, (dp->lba >> 32) & 0xFF);
-    outb(ATA_PRIMARY_LBA_HIGH, (dp->lba >> 40) & 0xFF);
+    outb(ctrl, 0x00);
+    outb(io + 2, (dp->count >> 8) & 0xFF);
+    outb(io + 3, (dp->lba >> 24) & 0xFF);
+    outb(io + 4, (dp->lba >> 32) & 0xFF);
+    outb(io + 5, (dp->lba >> 40) & 0xFF);
 
-    outb(ATA_PRIMARY_DRIVE_HEAD, 0x40);
-    outb(ATA_PRIMARY_SECTOR_COUNT, dp->count & 0xFF);
-    outb(ATA_PRIMARY_LBA_LOW, dp->lba & 0xFF);
-    outb(ATA_PRIMARY_LBA_MID, (dp->lba >> 8) & 0xFF);
-    outb(ATA_PRIMARY_LBA_HIGH, (dp->lba >> 16) & 0xFF);
+    outb(io + 6, 0x40 | (device << 4));
+    outb(io + 2, dp->count & 0xFF);
+    outb(io + 3, dp->lba & 0xFF);
+    outb(io + 4, (dp->lba >> 8) & 0xFF);
+    outb(io + 5, (dp->lba >> 16) & 0xFF);
 
     // Issue the LBA48 Write command.
-    outb(ATA_PRIMARY_COMMAND, ATA_CMD_WRITE_PIO_EXT);
+    outb(io + 7, ATA_CMD_WRITE_PIO_EXT);
 
     // Write each sector.
     for (int i = 0; i < dp->count; i++) {
-        _ata_wait_ready();
-        uint8_t status = inb(ATA_PRIMARY_STATUS);
+        _ata_wait_ready(io);
+        uint8_t status = inb(io + 7);
 
         if (status & ATA_SR_ERR) {
             return -1;
         }
 
-        while (!(inb(ATA_PRIMARY_STATUS) & ATA_SR_DRQ));
+        while (!(inb(io + 7) & ATA_SR_DRQ));
 
         // Write 256 words (512 bytes) from the buffer.
-        outsw(ATA_PRIMARY_DATA, (uint8_t*)buffer + (uint32_t)i * 512, 256);
+        outsw(io, (uint8_t*)buffer + (uint32_t)i * 512, 256);
     }
 
     // Flush the cache to ensure data is written to disk.
-    outb(ATA_PRIMARY_COMMAND, ATA_CMD_FLUSH_EXT);
-    _ata_wait_ready();
+    outb(io + 7, ATA_CMD_FLUSH_EXT);
+    _ata_wait_ready(io);
 
     return 0; // Success
 }
@@ -333,30 +362,163 @@ static inline void pm_itoa(int val, char* buf) {
     buf[i] = 0;
 }
 
+static inline void pm_utoa32(uint32_t val, char* buf) {
+    char tmp[11];
+    int i = 0;
+    if (val == 0) { buf[i++] = '0'; buf[i] = 0; return; }
+    while (val) {
+        tmp[i++] = '0' + (val % 10);
+        val /= 10;
+    }
+    int j = 0;
+    while (i--) buf[j++] = tmp[i];
+    buf[j] = 0;
+}
+
+static inline void pm_utoa64(uint64_t val, char* buf) {
+    if (val == 0) { buf[0] = '0'; buf[1] = 0; return; }
+
+    char tmp[21];
+    int i = 0;
+
+    uint32_t parts[3]; // We’ll split 64-bit into two 32-bit parts + remainder
+    parts[0] = (uint32_t)(val >> 32); // high
+    parts[1] = (uint32_t)(val & 0xFFFFFFFF); // low
+
+    while (parts[0] != 0 || parts[1] != 0) {
+        // Manual division by 10 using only 32-bit math
+        uint32_t remainder = 0;
+        for (int j = 0; j < 2; j++) {
+            uint64_t cur = ((uint64_t)remainder << 32) | parts[j];
+            // simulate 64-bit /10 using 32-bit arithmetic
+            uint32_t q = 0;
+            uint32_t r = 0;
+
+            // Binary long division
+            for (int k = 31; k >= 0; k--) {
+                r <<= 1;
+                r |= (cur >> k) & 1;
+                if (r >= 10) { r -= 10; q |= (1U << k); }
+            }
+
+            parts[j] = q;
+            remainder = r;
+        }
+        tmp[i++] = '0' + remainder;
+    }
+
+    // Reverse digits
+    int j = 0;
+    while (i--) buf[j++] = tmp[i];
+    buf[j] = 0;
+}
+
+static inline void pm_itoa_hex64(uint64_t val, char* buf) {
+    const char* digits = "0123456789ABCDEF";
+    char tmp[17];
+    int i = 0;
+
+    if (val == 0) { buf[0] = '0'; buf[1] = 0; return; }
+
+    while (val) {
+        tmp[i++] = digits[val & 0xF];
+        val >>= 4;
+    }
+
+    int j = 0;
+    while (i--) buf[j++] = tmp[i];
+    buf[j] = 0;
+}
+
 // Print with format capabilities
-static inline void pm_printf(PM_Cursor_t* cursor, const char* fmt, int first_arg_addr) {
+static inline void pm_printf(PM_Cursor_t* cursor, const char* fmt, int first_arg_addr, ...) {
     char* argp = (char*)&first_arg_addr;
     char ch;
+
     while ((ch = *fmt++)) {
-        if (ch == '%') {
-            char next = *fmt++;
-            if (next == 's') {
-                const char *str = *((const char**)argp);
-                argp += 4; // move pointer by 32-bit width
-                pm_print(cursor, str);
-            } else if (next == 'd') {
+        if (ch != '%') {
+            pm_put_char(cursor, ch);
+            continue;
+        }
+
+        char next = *fmt++;
+        if (!next) break;
+
+        switch (next) {
+            case 's': {
+                const char* str = *((const char**)argp);
+                argp += 4;
+                pm_print(cursor, str ? str : "(null)");
+                break;
+            }
+            case 'c': {
+                char c = *((char*)argp);
+                argp += 4;
+                pm_put_char(cursor, c);
+                break;
+            }
+            case 'd': {  // signed int
                 int val = *((int*)argp);
-                argp += 4; // move to next arg
-                char buf[12];
+                argp += 4;
+                char buf[16];
                 pm_itoa(val, buf);
                 pm_print(cursor, buf);
-            } else {
-                pm_put_char(cursor, ch);
+                break;
+            }
+            case 'u': {  // unsigned 32-bit
+                uint32_t val = *((uint32_t*)argp);
+                argp += 4;
+                char buf[16];
+                pm_utoa32(val, buf);
+                pm_print(cursor, buf);
+                break;
+            }
+            case 'U': {  // unsigned 64-bit
+                uint64_t val = *((uint64_t*)argp);
+                argp += 8;
+                char buf[32];
+                pm_utoa64(val, buf);
+                pm_print(cursor, buf);
+                break;
+            }
+            case 'x': {  // hex (32-bit)
+                uint32_t val = *((uint32_t*)argp);
+                argp += 4;
+                char buf[12];
+                pm_itoa_hex64(val, buf);
+                pm_print(cursor, buf);
+                break;
+            }
+            case 'X': {  // hex (64-bit)
+                uint64_t val = *((uint64_t*)argp);
+                argp += 8;
+                char buf[24];
+                pm_itoa_hex64(val, buf);
+                pm_print(cursor, buf);
+                break;
+            }
+            case 'p': {  // pointer
+                uint32_t ptr = *((uint32_t*)argp);
+                argp += 4;
+                char buf[12];
+                pm_print(cursor, "0x");
+                pm_itoa_hex64(ptr, buf);
+                pm_print(cursor, buf);
+                break;
+            }
+            case '%': {
+                pm_put_char(cursor, '%');
+                break;
+            }
+            default: {
+                // Unknown specifier — print literally
+                pm_put_char(cursor, '%');
+                pm_put_char(cursor, next);
+                break;
             }
         }
     }
 }
-
 // Scan Codes (SIMPLE FOR BOOTLOADER/PROTECTED MODE)
 static const char scan_to_ascii[128] = {
     0,  27, '1','2','3','4','5','6','7','8','9','0','-','=', '\b',
@@ -372,7 +534,7 @@ static inline uint8_t pm_ps2_read_scan(void) {
 }
 
 // Read a line
-void pm_read_line(char* buf, int max_len, PM_Cursor_t* cursor) {
+static inline void pm_read_line(char* buf, int max_len, PM_Cursor_t* cursor) {
     int idx = 0;
     for (;;) {
         uint8_t sc = pm_ps2_read_scan(); // read a scan code
@@ -400,6 +562,7 @@ void pm_read_line(char* buf, int max_len, PM_Cursor_t* cursor) {
                 }
                 pm_set_cursor(cursor, cursor->x, cursor->y);
                 pm_put_char(cursor, ' '); // erase
+                cursor->x--;
                 pm_set_cursor(cursor, cursor->x, cursor->y);
             }
         } else {
@@ -424,7 +587,7 @@ static inline int str_eq(const char* a, const char* b) {
 static inline int str_n_eq(const char* a, const char* b, int n) {
     for (int i = 0; i < n; i++) {
         if (a[i] != b[i]) return 0;
-        if (a[i] == 0) return 1; // match shorter string
+        if (a[i] == 0 || b[i] == 0) return 1; // both must be valid
     }
     return 1;
 }
@@ -436,3 +599,9 @@ static inline int str_len(const char* s) {
     return len;
 }
 
+static inline int str_prefix(const char* str, const char* prefix) {
+    while (*prefix) {
+        if (*str++ != *prefix++) return 0;
+    }
+    return 1;
+}

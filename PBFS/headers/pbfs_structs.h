@@ -3,7 +3,12 @@
 
 // We create structs for Pheonix Block File System
 
+#ifndef CLI
 #include "pbfs.h"
+#endif
+
+#define KERNEL_SIGN1 'K'
+#define KERNEL_SIGN2 'E'
 
 #pragma pack(push, 1)
 typedef struct {
@@ -104,5 +109,18 @@ typedef struct {
     char* name;
     uint32_t lba;
 } PBFS_FileListEntry;
+
+typedef struct {
+    uint64_t lba;
+    uint16_t count;
+} PBFS_DP;
+
+#pragma pack(push, 1)
+typedef struct {
+    char name[50];
+    uint64_t lba;
+    uint16_t count;
+} __attribute__((packed)) PBFS_KernelEntry;
+#pragma pack(pop)
 
 #endif
