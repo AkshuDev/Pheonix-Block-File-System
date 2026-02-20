@@ -29,6 +29,7 @@ typedef struct {
     uint64_t lba;
     uint16_t count;
 } __attribute__((packed)) PBFS_DP; // PBFS DP (Disk Packet) differs from DAP as the DP supports protected/long mode
+#pragma pack(pop)
 
 extern int read_lba_asm(PBFS_DAP* dap, uint8_t drive);
 extern int write_lba_asm(PBFS_DAP* dap, uint8_t drive);
@@ -524,7 +525,7 @@ static const char scan_to_ascii[128] = {
     0,  27, '1','2','3','4','5','6','7','8','9','0','-','=', '\b',
     '\t','q','w','e','r','t','y','u','i','o','p','[',']','\n',0,
     'a','s','d','f','g','h','j','k','l',';','\'','`',0,'\\',
-    'z','x','c','v','b','n','m',',','.','/',0,'*',0,' ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+    'z','x','c','v','b','n','m',',','.','/',0,'*',0,' ',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 };
 
 // Reads via PS2
