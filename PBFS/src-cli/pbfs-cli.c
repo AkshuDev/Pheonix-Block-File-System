@@ -17,6 +17,85 @@ static size_t align_up(size_t value, size_t alignment) {
     return remainder == 0 ? value : value + alignment - remainder;
 }
 
+// Util Funcs for bitmap
+static int bitmap_test_recursive(PBFS_Bitmap* current, uint128_t lba, uint128_t bitmap_idx, FILE* fp, int block_size) {
+    if (is_lba_in_current_bitmap(lba, bitmap_idx)) {
+        uint64_t local_bit = uint128_to_u64(lba) % (PBFS_BITMAP_LIMIT * 8);
+        return bitmap_bit_test(current->bytes, local_bit);
+    }
+
+    uint64_t ext_lba = uint128_to_u64(current->extender_lba); // Cur-Technology supports 64-bit addressing only, 128-bit addressing is for future-proofing
+    if (ext_lba <= 1) return -1;
+
+    fseek(fp, LBA(ext_lba, block_size), SEEK_SET);
+    if (fread(current, sizeof(PBFS_Bitmap), 1, fp) == 0) return -1;
+    uint128_t bitmap_idx_inced = bitmap_idx;
+    uint128_inc(&bitmap_idx_inced);
+    return bitmap_test_recursive(current, lba, bitmap_idx_inced, fp, block_size);
+}
+uint128_t bitmap_set(
+    PBFS_Bitmap* current, 
+    uint128_t lba, 
+    uint128_t current_lba, 
+    uint128_t bitmap_idx, 
+    FILE* fp,
+    int block_size,
+    uint8_t value // 0/1 (default: 0)
+) {
+    if (is_lba_in_current_bitmap(lba, bitmap_idx)) {
+        uint64_t local_bit = uint128_to_u64(lba) % (PBFS_BITMAP_LIMIT * 8);
+        if (value == 1)
+            bitmap_bit_set(current->bytes, local_bit);
+        else
+            bitmap_bit_clear(current->bytes, local_bit);
+        fseek(fp, LBA(uint128_to_u64(current_lba), block_size), SEEK_SET);
+        fwrite(current, sizeof(PBFS_Bitmap), 1, fp);
+        return lba;
+    }
+
+    // Need next extender
+    uint64_t next_ext_lba = uint128_to_u64(current->extender_lba);
+    uint128_t next_ext = current->extender_lba;
+
+    if (next_ext_lba <= 1) {
+        // Find a free block in CURRENT bitmap to use as the NEW extension block
+        // use the first available bit in the current data range
+        uint128_t new_block = UINT128_ZERO;
+        for (uint64_t i = 0; i < (PBFS_BITMAP_LIMIT * 8); i++) {
+            if (!bitmap_bit_test(current->bytes, i)) {
+                uint128_mul_u32(&new_block, &bitmap_idx, PBFS_BITMAP_LIMIT * 8);
+                uint128_t i_128 = uint128_from_u64(i);
+                uint128_add(&new_block, &new_block, &i_128);
+                break;
+            }
+        }
+
+        if (uint128_is_zero(&new_block)) return UINT128_ZERO; // Truly out of space
+
+        // Link current to new
+        current->extender_lba = new_block;
+        fseek(fp, LBA(uint128_to_u64(current_lba), block_size), SEEK_SET);
+        fwrite(current, sizeof(PBFS_Bitmap), 1, fp);
+
+        // Initialize new bitmap block
+        PBFS_Bitmap new_bitmap;
+        memset(&new_bitmap, 0, sizeof(PBFS_Bitmap));
+        fseek(fp, LBA(uint128_to_u64(new_block), block_size), SEEK_SET);
+        fwrite(&new_bitmap, sizeof(PBFS_Bitmap), 1, fp);
+
+        // Continue recursion with the newly created block
+        memcpy(current, &new_bitmap, sizeof(PBFS_Bitmap));
+        next_ext = new_block;
+    } else {
+        fseek(fp, LBA(next_ext_lba, block_size), SEEK_SET);
+        if (fread(current, sizeof(PBFS_Bitmap), 1, fp) == 0) return UINT128_ZERO;
+    }
+
+    uint128_t bitmap_idx_inced = bitmap_idx;
+    uint128_inc(&bitmap_idx_inced);
+    return bitmap_set(current, lba, next_ext, bitmap_idx_inced, fp, block_size, value);
+}
+
 // Verifies the header
 int pbfs_verify_header(PBFS_Header* header) {
     if (memcmp(&header->magic, PBFS_MAGIC, PBFS_MAGIC_LEN) != 0) return HeaderVerificationFailed;
@@ -122,7 +201,7 @@ int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, 
     fseek(fp, LBA(data_lba, block_size), SEEK_SET);
     uint128_t total_blocks_idx = total_blocks;
     uint128_dec(&total_blocks_idx);
-    for (uint128_t i = UINT128_ZERO; uint128_cmp(&i, &total_blocks_idx) != 0; uint128_inc(&i)) {
+    for (uint128_t i = UINT128_ZERO; UINT128_NEQ(i, total_blocks_idx); uint128_inc(&i)) {
         fwrite(disk, block_size, 1, fp);
     }
 
@@ -154,7 +233,7 @@ int pbfs_create(const char* image, uint32_t block_size, uint128_t total_blocks) 
     uint128_t total_blocks_idx = total_blocks;
     uint128_dec(&total_blocks_idx);
     memset(disk, 0, block_size);
-    for (uint128_t i = UINT128_ZERO; uint128_cmp(&i, &total_blocks_idx) != 0; uint128_inc(&i)) {
+    for (uint128_t i = UINT128_ZERO; UINT128_NEQ(i, total_blocks_idx); uint128_inc(&i)) {
         fwrite(disk, block_size, 1, fp);
     }
 
@@ -254,7 +333,7 @@ int pbfs_test(const char* image) {
 
             for (int i = 0; i < PBFS_KERNEL_TABLE_ENTRIES; i++) {
                 PBFS_Kernel_Entry* entry = &kernel_table->entries[i];
-                if (uint128_cmp(&entry->lba, &test_lba) != 1)
+                if (UINT128_NEQ(entry->lba, test_lba))
                     continue;
                 printf(
                     "== Kernel Entry (%d) ==\n"

@@ -1,7 +1,6 @@
 #include <pbfs-cli.h>
 #include <pbfs_structs.h>
 #include <pbfs.h>
-#include <stdio.h>
 
 uint128_t uint128_from_u32(uint32_t value) {
     uint128_t out = {{ value, 0, 0, 0 }};
@@ -93,11 +92,6 @@ int uint128_is_zero(const uint128_t* a) {
     return a->part[0] == 0 && a->part[1] == 0 && a->part[2] == 0 && a->part[3] == 0;
 }
 
-// Debug print
-void uint128_print(const uint128_t* a) {
-    printf("0x%08X%08X%08X%08X\n", a->part[3], a->part[2], a->part[1], a->part[0]);
-}
-
 uint64_t uint128_get_low64(const uint128_t* val) {
     return ((uint64_t)val->part[1] << 32) | val->part[0];
 }
@@ -135,4 +129,13 @@ int bitmap_bit_test(uint8_t* bitmap, uint64_t bit_index) {
     if (byte_idx >= PBFS_BITMAP_LIMIT) return -1;
     uint8_t bit_offset = bit_index % 8;
     return (bitmap[byte_idx] >> bit_offset) & 1;
+}
+
+int is_lba_in_current_bitmap(uint128_t lba, uint128_t bitmap_index) {
+    uint128_t range_start = UINT128_ZERO;
+    uint128_mul_u32(&range_start, &bitmap_index, (PBFS_BITMAP_LIMIT * 8));
+    uint128_t range_end = UINT128_ZERO;
+    uint128_t max_bitmap_block_range = uint128_from_u32(PBFS_BITMAP_LIMIT * 8);
+    uint128_add(&range_end, &range_start, &max_bitmap_block_range);
+    return (UINT128_GTE(lba, range_start) && UINT128_LT(lba, range_end));
 }

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <stdint.h>
-#include <sys/cdefs.h>
 
 #define PBFS_MAGIC "PBFS\0\0"
 #define PBFS_MAGIC_LEN 6
