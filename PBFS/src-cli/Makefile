@@ -5,10 +5,7 @@ build_dir := $(BaseDir)/build-cli
 obj_dir = $(build_dir)/objs
 headers_dir := $(BaseDir)/headers
 
-PEFI_dir := $(BaseDir)/PEFI
-Pefi_headers_dir := $(PEFI_dir)/includes
-
-C_SRCFILES = $(wildcard *.c)
+C_SRCFILES = $(wildcard *.c) $(BaseDir)/tools/utils.c
 H_SRCFILES = $(wildcard $(headers_dir)/*.h)
 
 C_OBJS = $(patsubst %.c, $(build_dir)/%.o, $(C_SRCFILES))
@@ -17,8 +14,8 @@ OBJS := $(C_OBJS) $(ASM_OBJS)
 # === END CONFIG ===
 # === TOOLS ===
 CC := gcc
-CFLAGS := -I$(headers_dir) -I$(Pefi_headers_dir) -Wall -g -w
-CFLAGS_LIB := -L$(PEFI_dir)/build -lpefi -Wl,-rpath,$(realpath $(PEFI_dir)/build)
+CFLAGS := -I$(headers_dir) -Wall -g -w
+CFLAGS_LIB := 
 
 OS := $(shell uname -s)
 

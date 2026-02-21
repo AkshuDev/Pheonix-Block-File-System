@@ -7,6 +7,9 @@
 #define PBFS_MAGIC_LEN 6
 #define PBFS_BITMAP_LIMIT 496
 
+#define PBFS_KERNEL_TABLE_ENTRIES 6
+#define PBFS_DMM_ENTRIES 4
+
 typedef struct {
     uint32_t part[4]; // [0] = LSB, [3] = MSB
 } uint128_t __attribute__((packed));
@@ -40,7 +43,7 @@ typedef struct {
 } PBFS_Kernel_Entry __attribute__((packed));
 
 typedef struct {
-    PBFS_Kernel_Entry entries[6];
+    PBFS_Kernel_Entry entries[PBFS_KERNEL_TABLE_ENTRIES];
 
     uint8_t reserved[16];
     uint128_t extender_lba;
@@ -58,7 +61,7 @@ typedef struct {
 } PBFS_DMM_Entry __attribute__((packed));
 
 typedef struct {
-    PBFS_DMM_Entry entries[4];
+    PBFS_DMM_Entry entries[PBFS_DMM_ENTRIES];
 
     uint8_t reserved[96];
     uint128_t extender_lba;

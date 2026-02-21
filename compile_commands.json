@@ -4,7 +4,6 @@
     "arguments": [
       "gcc",
       "-I../headers",
-      "-I../PEFI/includes",
       "-Wall",
       "-g",
       "-w",
@@ -16,19 +15,18 @@
     "output": "../build-cli/pbfs-cli"
   },
   {
-    "file": "utils.c",
+    "file": "../tools/utils.c",
     "arguments": [
       "gcc",
       "-I../headers",
-      "-I../PEFI/includes",
       "-Wall",
       "-g",
       "-w",
       "-o",
-      "../build-cli/utils",
-      "utils.c"
+      "../build-cli/pbfs-cli",
+      "../tools/utils.c"
     ],
-    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/tools",
-    "output": "../build-cli/utils"
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/src-cli",
+    "output": "../build-cli/pbfs-cli"
   }
 ]

@@ -19,30 +19,42 @@ static size_t align_up(size_t value, size_t alignment) {
 
 // Verifies the header
 int pbfs_verify_header(PBFS_Header* header) {
-    if (!memcmp(&header->magic, PBFS_MAGIC, PBFS_MAGIC_LEN) != 0) return HeaderVerificationFailed;
+    if (memcmp(&header->magic, PBFS_MAGIC, PBFS_MAGIC_LEN) != 0) return HeaderVerificationFailed;
     return EXIT_SUCCESS;
 }
 
 // Creates and Formats the disk
-int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, uint8_t bootpart_size, uint32_t block_size, uint128_t total_blocks) {
-    if (bootpartition <= 1) {
-        fprintf(stderr, "Error: Sorry Boot partition cannot be lower or equal to LBA 1 [PBFS Header + MBR/GPT]\n");
-        return InvalidArgument;
+int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, uint8_t bootpart_size, uint32_t block_size, uint128_t total_blocks, char* disk_name, uint128_t volume_id) {
+    if (bootpart_size < 1) {
+        bootpartition = 0;
     }
 
+    printf(
+        "Block Size: %d\nTotal Blocks: %lld\nVolume Id: %lld\nDisk Name: %s\n",
+        (unsigned int)block_size, 
+        (unsigned long long int)uint128_to_u64(total_blocks),
+        (unsigned long long int)uint128_to_u64(volume_id), 
+        disk_name
+    );
+
     FILE* fp = fopen(image, "wb");
-    if (!fp) return FileError;
+    if (!fp) {
+        perror("Could not open file!\n");
+        return FileError;
+    }
 
     // Allocate Blocks
-    uint8_t* disk = calloc(1, block_size);
+    uint8_t* disk = (uint8_t*)calloc(1, block_size);
     if (!disk) {
+        perror("Allocation Failed!\n");
         fclose(fp);
         return AllocFailed;
     }
+    uint8_t block[512] = {0};
     
-    // Write MBR/GPT
+    // Write MBR/GPT (512 - only!)
     fseek(fp, 0, SEEK_SET);
-    fwrite(disk, block_size, 1, fp);
+    fwrite(block, 512, 1, fp);
     // Set up Header
     PBFS_Header* hdr = (PBFS_Header*)disk;
     memset(hdr, 0, sizeof(PBFS_Header));
@@ -50,6 +62,8 @@ int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, 
     memcpy(&hdr->magic, PBFS_MAGIC, PBFS_MAGIC_LEN);
     hdr->block_size = block_size;
     hdr->total_blocks = total_blocks;
+    hdr->volume_id = volume_id;
+    strncpy(hdr->disk_name, disk_name, sizeof(hdr->disk_name));
     
     uint64_t bitmap_lba = 2;
     uint64_t dmm_lba = 3;
@@ -64,10 +78,12 @@ int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, 
         dmm_lba++;
         sysinfo_lba++;
         data_lba++;
+        printf("Kernel Table: Reserved 1 Block\n");
     }
     if (bootpartition == 1) {
         boot_part_lba = data_lba;
         data_lba += bootpart_size;
+        printf("Boot Partition: Reserved %d Blocks\n", bootpart_size);
     }
 
     hdr->bitmap_lba = bitmap_lba;
@@ -77,7 +93,7 @@ int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, 
     hdr->boot_partition_lba = boot_part_lba;
     hdr->data_start_lba = data_lba;
 
-    fseek(fp, LBA(1, block_size), SEEK_SET);
+    fseek(fp, 512, SEEK_SET);
     fwrite(disk, block_size, 1, fp);
 
     memset(disk, 0, block_size);
@@ -106,7 +122,7 @@ int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, 
     fseek(fp, LBA(data_lba, block_size), SEEK_SET);
     uint128_t total_blocks_idx = total_blocks;
     uint128_dec(&total_blocks_idx);
-    for (uint128_t i = UINT128_ZERO; uint128_cmp(&i, &total_blocks_idx) == 0; uint128_inc(&i)) {
+    for (uint128_t i = UINT128_ZERO; uint128_cmp(&i, &total_blocks_idx) != 0; uint128_inc(&i)) {
         fwrite(disk, block_size, 1, fp);
     }
 
@@ -138,7 +154,7 @@ int pbfs_create(const char* image, uint32_t block_size, uint128_t total_blocks) 
     uint128_t total_blocks_idx = total_blocks;
     uint128_dec(&total_blocks_idx);
     memset(disk, 0, block_size);
-    for (uint128_t i = UINT128_ZERO; uint128_cmp(&i, &total_blocks_idx) == 0; uint128_inc(&i)) {
+    for (uint128_t i = UINT128_ZERO; uint128_cmp(&i, &total_blocks_idx) != 0; uint128_inc(&i)) {
         fwrite(disk, block_size, 1, fp);
     }
 
@@ -147,33 +163,151 @@ int pbfs_create(const char* image, uint32_t block_size, uint128_t total_blocks) 
     return EXIT_SUCCESS;
 }
 
+// Test and print Disk Info
+int pbfs_test(const char* image) {
+    PBFS_Header* hdr = (PBFS_Header*)calloc(1, sizeof(PBFS_Header));
+    if (!hdr) {
+        perror("Failed to allocate memory!\n");
+        return AllocFailed;
+    }
+    FILE* f = fopen(image, "rb");
+    if (!f) {
+        perror("Failed to open image!\n");
+        free(hdr);
+        return FileError;
+    }
+
+    fseek(f, 0, SEEK_END);
+    size_t size = ftell(f);
+    rewind(f);
+    if (size < 512 + sizeof(PBFS_Header)) {
+        fprintf(stderr, "Invalid Disk!\n");
+        fclose(f);
+        free(hdr);
+        return InvalidHeader;
+    }
+
+    fseek(f, 512, SEEK_SET);
+    fread(hdr, sizeof(PBFS_Header), 1, f);
+    if (pbfs_verify_header(hdr) != EXIT_SUCCESS) {
+        fprintf(stderr, "Invalid Header!\n");
+        fclose(f);
+        free(hdr);
+        return InvalidHeader;
+    }
+
+    printf(
+        "=== Header Information ===\n"
+        "Magic: %.6s\n"
+        "Block Size: %d\nTotal Blocks: %lld\n"
+        "Disk Name: %s\nVolume ID: %lld\n",
+        hdr->magic,
+        (unsigned int)hdr->block_size, (unsigned long long int)uint128_to_u64(hdr->total_blocks),
+        (char*)hdr->disk_name, (unsigned long long int)uint128_to_u64(hdr->volume_id)
+    );
+
+    if (hdr->bitmap_lba <= 1) {
+        fprintf(stderr, "Error: Bitmap LBA INVALID\n");
+        fclose(f);
+        free(hdr);
+        return InvalidHeader;
+    } else if (hdr->sysinfo_lba <= 1) {
+        fprintf(stderr, "Error: SystemInfo LBA INVALID\n");
+        fclose(f);
+        free(hdr);
+        return InvalidHeader;
+    } else if (hdr->dmm_root_lba <= 1) {
+        fprintf(stderr, "Error: DMM LBA INVALID\n");
+        fclose(f);
+        free(hdr);
+        return InvalidHeader;
+    } else if (hdr->data_start_lba <= 1) {
+        fprintf(stderr, "Error: Data LBA INVALID\n");
+        fclose(f);
+        free(hdr);
+        return InvalidHeader;
+    }
+
+    uint8_t* disk = (uint8_t*)calloc(1, hdr->block_size);
+    if (!disk) {
+        perror("Failed to allocate memory!\n");
+        fclose(f);
+        free(hdr);
+        return AllocFailed;
+    }
+
+    if (hdr->boot_partition_lba <= 1)
+        printf("Info: No Boot Partition Found\n");
+    else
+        printf("\n=== Boot Partiton ===\nSize (In Blocks): %lld\n", (unsigned long long int)(hdr->data_start_lba - hdr->boot_partition_lba));
+    if (hdr->kernel_table_lba <= 1) {
+        printf("Info: No Kernel Table Found\n");
+    } else {
+        uint64_t kto = hdr->kernel_table_lba;
+        PBFS_Kernel_Table* kernel_table = (PBFS_Kernel_Table*)disk;
+        uint128_t test_lba = uint128_from_u32(1);
+
+        printf("\n=== Kernel Table ===\n");
+        while (kto > 1) {
+            fseek(f, LBA(kto, hdr->block_size), SEEK_SET);
+            fread(disk, hdr->block_size, 1, f);
+
+            for (int i = 0; i < PBFS_KERNEL_TABLE_ENTRIES; i++) {
+                PBFS_Kernel_Entry* entry = &kernel_table->entries[i];
+                if (uint128_cmp(&entry->lba, &test_lba) != 1)
+                    continue;
+                printf(
+                    "== Kernel Entry (%d) ==\n"
+                    "\tName: %.64s"
+                    "\tLBA: %lld\n",
+                    i, entry->name,
+                    (unsigned long long int)uint128_to_u64(entry->lba)
+                );
+            }
+
+            kto = uint128_to_u64(kernel_table->extender_lba);
+        }
+    }
+
+    printf("Success!\n");
+
+    free(hdr);
+    free(disk);
+    fclose(f);
+    return EXIT_SUCCESS;
+}
 
 // Main function
 int main(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: pbfs-cli <image> <commands>\nCommands:\n\t-bs: Define the Block Size\n\t-tb: Define Total number of blocks\n\t-dn: Define the disk name\n\t-f: Format the disk\n\t... USE -help for more info.\n");
+        fprintf(stderr, "Usage: pbfs-cli <image> <[commands]>\nCommands:\n\t-bs/--block_size: Define the Block Size\n\t-tb/--total_blocks: Define Total number of blocks\n\t-dn/--disk_name: Define the disk name\n\t... USE -h/--help for more info.\n");
         return InvalidUsage;
     }
 
     uint8_t create_image = 0;
     uint8_t format_image = 0;
+
     uint8_t add_file = 0;
     uint8_t add_bootloader = 0;
+
     uint8_t bootpart = 0;
+    int bootpartsize = 0;
+
     uint8_t kerneltable = 0;
     uint8_t add_kernel = 0;
+
+    uint8_t test_image = 0;
+
     uint32_t block_size = 0;
     uint128_t total_blocks = UINT128_ZERO;
     uint128_t disk_size = UINT128_ZERO;
-
-    char* disk_name = NULL;
-
-    int bootpartsize = 0;
+    uint128_t volume_id = UINT128_ZERO;
+    char disk_name[32];
 
     char* filename = "";
     char* filepath = "";
 
-    if (strncmp(argv[1], "-help", 5) == 0) {
+    if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
       printf(PBFS_CLI_HELP);
       return EXIT_SUCCESS;
     }
@@ -181,32 +315,44 @@ int main(int argc, char** argv) {
     char* image = argv[1];
 
     for (int i = 2; i < argc; i++) {
-        if (strncmp(argv[i], "-bs", 3) == 0) {
+        if (strcmp(argv[i], "-bs") == 0 || strcmp(argv[i], "--block_size") == 0) {
             block_size = (uint32_t)atoi(argv[i + 1]);
+            if (block_size < 512) {
+                fprintf(stderr, "Block Size cannot be lower than 512!\n");
+                return InvalidUsage;
+            }
             // Update the disk size
             uint128_mul_u32(&disk_size, &total_blocks, block_size);
             i++;
-        } else if (strncmp(argv[i], "-tb", 3) == 0) {
+        } else if (strcmp(argv[i], "-tb") == 0 || strcmp(argv[i], "--total_blocks") == 0) {
             total_blocks = uint128_from_u64((uint64_t)atoll(argv[i + 1]));
             // Update the disk size
             uint128_mul_u32(&disk_size, &total_blocks, block_size);
             i++;
-        } else if (strncmp(argv[i], "-dn", 3) == 0) {
-            strncpy(disk_name, argv[i + 1], 32);
+        } else if (strcmp(argv[i], "-dn") == 0 || strcmp(argv[i], "--disk_name") == 0) {
+            strncpy(disk_name, argv[i + 1], 31);
+            disk_name[31] = '\0';
             i++;
-        } else if (strncmp(argv[i], "-f", 2) == 0) {
+        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--volume_id") == 0) {
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <volume_id>\n", argv[i]);
+                return InvalidUsage;
+            }
+            volume_id = uint128_from_u64((uint64_t)atoll(argv[i + 1]));
+            i++;
+        } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--format") == 0) {
             format_image = 1;
-        } else if (strncmp(argv[i], "-help", 5) == 0) {
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             printf(PBFS_CLI_HELP);
             return EXIT_SUCCESS;
-        } else if (strncmp(argv[i], "-c", 2) == 0) {
+        } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--create") == 0) {
             // Create the image
             create_image = 1;
-        } else if (strncmp(argv[i], "-add", 4) == 0) {
+        } else if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--add") == 0) {
             // Add a file
             // Check if the filename and filepath are also provided
             if (i + 3 > argc) {
-                printf("Usage: pbfs-cli <image> -add <filename> <filepath>\n");
+                printf("Usage: pbfs-cli <image> %s <filename> <filepath>\n", argv[i]);
                 return InvalidUsage;
             }
             add_file = 1;
@@ -214,60 +360,60 @@ int main(int argc, char** argv) {
             filepath = argv[i + 2];
             i++;
             i++;
-        } else if (strncmp(argv[i], "-bootloader", 11) == 0) {
+        } else if (strcmp(argv[i], "-btl") == 0 || strcmp(argv[i], "--bootloader") == 0) {
             // Add a bootloader
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> -bootloader <filepath>\n");
+                printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
                 return InvalidUsage;
             }
             add_bootloader = 1;
             filepath = argv[i + 1];
             i++;
-        } else if (strncmp(argv[i], "-partboot", 9) == 0) {
+        } else if (strcmp(argv[i], "-btp") == 0 || strcmp(argv[i], "--boot_partition") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> -partboot <blocks>\n");
+                printf("Usage: pbfs-cli <image> %s <blocks>\n", argv[i]);
                 return InvalidUsage;
             }
-            bootpartsize = (int)argv[i + 1];
+            bootpartsize = (int)atoi(argv[i + 1]);
             bootpart = 1;
             i++;
-        } else if (strcmp(argv[i], "-partkernel") == 0) {
+        } else if (strcmp(argv[i], "-akt") == 0 || strcmp(argv[i], "--add_kernel_table") == 0) {
             kerneltable = 1;
-        } else if (strncmp(argv[i], "-kernel", 7) == 0) {
+        } else if (strcmp(argv[i], "-k") == 0 || strcmp(argv[i], "--kernel") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> -kernel <filepath>\n");
+                printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
                 return InvalidUsage;
             }
             add_kernel = 1;
             filepath = argv[i + 1];
             i++;
+        } else if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--test") == 0) {
+            test_image = 1;
         } else {
-            printf("Unknown command: %s\n", argv[i]);
+            printf("Unknown command: %s\n\tTry using -h/--help for more info!\n", argv[i]);
             return InvalidArgument;
         }
     }
-
-    printf("Block Size: %d\n", block_size);
-    printf("Total Blocks: %d\n", total_blocks);
-    printf("Disk Name: %s\n", disk_name);
 
     if (create_image) {
         printf("Creating Image...\n");
         int out = pbfs_create(image, block_size, total_blocks);
 
         if (out != EXIT_SUCCESS) {
-            perror("An Error Occurred!\n");
+            fprintf(stderr, "An Error Occurred!\n");
             return out;
         }
+        printf("Done!\n");
     }
     if (format_image) {
         printf("Formating Image...\n");
-        int out = pbfs_format(image, kerneltable, bootpart, bootpartsize, block_size, total_blocks);
+        int out = pbfs_format(image, kerneltable, bootpart, bootpartsize, block_size, total_blocks, disk_name, volume_id);
 
         if (out != EXIT_SUCCESS) {
-            perror("An Error Occurred!\n");
+            fprintf(stderr, "An Error Occurred!\n");
             return out;
         }
+        printf("Done!\n");
     }
     if (add_file) {
         printf("Adding File [%s] to Image...\n", filename);
@@ -278,9 +424,11 @@ int main(int argc, char** argv) {
         printf("Done!\n");
     }
     if (add_kernel) {
-        printf("Adding Kernel [%s]...\n", filepath);
-        
+        printf("Adding Kernel [%s]...\n", filepath); 
         printf("Done!\n");
+    }
+    if (test_image) {
+        pbfs_test(image);
     }
 
     return EXIT_SUCCESS;
