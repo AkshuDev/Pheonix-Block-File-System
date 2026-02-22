@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #define LBA(lba, block_size) lba * block_size
 
@@ -27,21 +28,61 @@ static int bitmap_test_recursive(PBFS_Bitmap* current, uint128_t lba, uint128_t 
     uint64_t ext_lba = uint128_to_u64(current->extender_lba); // Cur-Technology supports 64-bit addressing only, 128-bit addressing is for future-proofing
     if (ext_lba <= 1) return -1;
 
+    PBFS_Bitmap next = {0};
     fseek(fp, LBA(ext_lba, block_size), SEEK_SET);
-    if (fread(current, sizeof(PBFS_Bitmap), 1, fp) == 0) return -1;
+    if (fread(&next, sizeof(PBFS_Bitmap), 1, fp) == 0) return -1;
     uint128_t bitmap_idx_inced = bitmap_idx;
     uint128_inc(&bitmap_idx_inced);
-    return bitmap_test_recursive(current, lba, bitmap_idx_inced, fp, block_size);
+    return bitmap_test_recursive(&next, lba, bitmap_idx_inced, fp, block_size);
 }
-uint128_t bitmap_set(
-    PBFS_Bitmap* current, 
-    uint128_t lba, 
-    uint128_t current_lba, 
-    uint128_t bitmap_idx, 
-    FILE* fp,
-    int block_size,
-    uint8_t value // 0/1 (default: 0)
-) {
+static uint128_t bitmap_find_blocks(PBFS_Bitmap* start, uint128_t blocks, FILE* fp, int block_size) {
+    if (uint128_is_zero(&blocks))
+        return UINT128_ZERO;
+    
+    PBFS_Bitmap current = *start;
+    uint128_t bitmap_idx = UINT128_ZERO;
+
+    uint128_t run_start = UINT128_ZERO;
+    uint128_t run_length = UINT128_ZERO;
+    uint8_t in_run = 0;
+
+    for (uint64_t depth = 0; depth < PBFS_MAX_BITMAP_CHAIN; depth++) {
+
+        for (uint64_t i = 0; i < (PBFS_BITMAP_LIMIT * 8); i++) {
+
+            uint128_t global_lba;
+            uint128_mul_u32(&global_lba, &bitmap_idx, PBFS_BITMAP_LIMIT * 8);
+            uint128_t i_128 = uint128_from_u64(i);
+            uint128_add(&global_lba, &global_lba, &i_128);
+
+            if (!bitmap_bit_test(current.bytes, i)) {
+                if (!in_run) {
+                    run_start = global_lba;
+                    run_length = UINT128_ZERO;
+                    in_run = 1;
+                }
+                uint128_inc(&run_length);
+                if (UINT128_EQ(run_length, blocks))
+                    return run_start;
+            } else {
+                in_run = 0;
+                run_length = UINT128_ZERO;
+            }
+        }
+        uint64_t next_ext_lba = uint128_to_u64(current.extender_lba);
+        if (next_ext_lba <= 1)
+            return UINT128_ZERO;
+
+        fseek(fp, LBA(next_ext_lba, block_size), SEEK_SET);
+        if (fread(&current, sizeof(PBFS_Bitmap), 1, fp) != 1)
+            return UINT128_ZERO;
+
+        uint128_inc(&bitmap_idx);
+    }
+
+    return UINT128_ZERO;
+}
+static uint128_t bitmap_set(PBFS_Bitmap* current, uint128_t lba, uint128_t current_lba, uint128_t bitmap_idx, FILE* fp, int block_size, uint8_t value) { // value: 1/0 (default: 0)
     if (is_lba_in_current_bitmap(lba, bitmap_idx)) {
         uint64_t local_bit = uint128_to_u64(lba) % (PBFS_BITMAP_LIMIT * 8);
         if (value == 1)
@@ -56,21 +97,25 @@ uint128_t bitmap_set(
     // Need next extender
     uint64_t next_ext_lba = uint128_to_u64(current->extender_lba);
     uint128_t next_ext = current->extender_lba;
+    PBFS_Bitmap next = {0};
 
     if (next_ext_lba <= 1) {
         // Find a free block in CURRENT bitmap to use as the NEW extension block
         // use the first available bit in the current data range
         uint128_t new_block = UINT128_ZERO;
+        uint8_t found = 0;
         for (uint64_t i = 0; i < (PBFS_BITMAP_LIMIT * 8); i++) {
             if (!bitmap_bit_test(current->bytes, i)) {
                 uint128_mul_u32(&new_block, &bitmap_idx, PBFS_BITMAP_LIMIT * 8);
                 uint128_t i_128 = uint128_from_u64(i);
                 uint128_add(&new_block, &new_block, &i_128);
+                bitmap_bit_set(current->bytes, i);
+                found = 1;
                 break;
             }
         }
 
-        if (uint128_is_zero(&new_block)) return UINT128_ZERO; // Truly out of space
+        if (found == 0) return UINT128_ZERO; // Truly out of space
 
         // Link current to new
         current->extender_lba = new_block;
@@ -78,22 +123,55 @@ uint128_t bitmap_set(
         fwrite(current, sizeof(PBFS_Bitmap), 1, fp);
 
         // Initialize new bitmap block
-        PBFS_Bitmap new_bitmap;
-        memset(&new_bitmap, 0, sizeof(PBFS_Bitmap));
+        memset(&next, 0, sizeof(PBFS_Bitmap));
         fseek(fp, LBA(uint128_to_u64(new_block), block_size), SEEK_SET);
-        fwrite(&new_bitmap, sizeof(PBFS_Bitmap), 1, fp);
+        fwrite(&next, sizeof(PBFS_Bitmap), 1, fp);
 
         // Continue recursion with the newly created block
-        memcpy(current, &new_bitmap, sizeof(PBFS_Bitmap));
         next_ext = new_block;
     } else {
         fseek(fp, LBA(next_ext_lba, block_size), SEEK_SET);
-        if (fread(current, sizeof(PBFS_Bitmap), 1, fp) == 0) return UINT128_ZERO;
+        if (fread(&next, sizeof(PBFS_Bitmap), 1, fp) == 0) return UINT128_ZERO;
     }
 
     uint128_t bitmap_idx_inced = bitmap_idx;
     uint128_inc(&bitmap_idx_inced);
-    return bitmap_set(current, lba, next_ext, bitmap_idx_inced, fp, block_size, value);
+    return bitmap_set(&next, lba, next_ext, bitmap_idx_inced, fp, block_size, value);
+}
+// Util Funcs for parsing perms and types
+static PBFS_Metadata_Flags parse_file_type(char* str) {
+    PBFS_Metadata_Flags type = METADATA_FLAG_INVALID;
+    if (strcmp(str, "dir") == 0) {
+        type = METADATA_FLAG_DIR;
+    } else if (strcmp(str, "file") == 0) {
+        type = METADATA_FLAG_FILE;
+    } else if (strcmp(str, "res") == 0) {
+        type = METADATA_FLAG_RES;
+    } else if (strcmp(str, "sys") == 0) {
+        type = METADATA_FLAG_SYS;
+    }
+    return type;
+}
+static PBFS_Permission_Flags parse_file_perms(char* str) {
+    PBFS_Permission_Flags perms = PERM_INVALID;
+    char str_c[6]; // ensures proper parsing + speed due to switch
+    strncpy(str_c, str, sizeof(str_c));
+    size_t slen = strlen(str_c);
+
+    for (uint32_t i = 0; i < slen; i++) {
+        char c = str_c[i];
+        switch (c) {
+            case 'r': perms |= PERM_READ; break;
+            case 'w': perms |= PERM_WRITE; break;
+            case 'e': perms |= PERM_EXEC; break;
+            case 'l': perms |= PERM_LOCKED; break;
+            case 'p': perms |= PERM_PROTECTED; break;
+            case 's': perms |= PERM_SYS; break;
+            default: perms = PERM_INVALID; return perms; // No mercy
+        }
+    }
+
+    return perms;
 }
 
 // Verifies the header
@@ -104,6 +182,16 @@ int pbfs_verify_header(PBFS_Header* header) {
 
 // Creates and Formats the disk
 int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, uint8_t bootpart_size, uint32_t block_size, uint128_t total_blocks, char* disk_name, uint128_t volume_id) {
+    if (block_size < 512) {
+        fprintf(stderr, "Block Size cannot be less than 512 bytes!\n");
+        return InvalidArgument;
+    }
+    uint128_t u128_10 = uint128_from_u32(10);
+    if (UINT128_LT(total_blocks, u128_10)) {
+        fprintf(stderr, "Total Blocks cannot be less than 10!\n");
+        return InvalidArgument;
+    }
+    
     if (bootpart_size < 1) {
         bootpartition = 0;
     }
@@ -196,6 +284,9 @@ int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, 
     bitmap_bit_set((uint8_t*)&bitmap->bytes, dmm_lba);
     bitmap_bit_set((uint8_t*)&bitmap->bytes, sysinfo_lba);
     if (bootpartition) bitmap_bit_set((uint8_t*)&bitmap->bytes, boot_part_lba);
+    if (kernel_table) bitmap_bit_set((uint8_t*)&bitmap->bytes, kernel_table_lba);
+    fseek(fp, LBA(bitmap_lba, block_size), SEEK_SET);
+    fwrite(disk, block_size, 1, fp);
 
     memset(disk, 0, block_size);
     fseek(fp, LBA(data_lba, block_size), SEEK_SET);
@@ -242,8 +333,138 @@ int pbfs_create(const char* image, uint32_t block_size, uint128_t total_blocks) 
     return EXIT_SUCCESS;
 }
 
+// Adds a DMM entry to the disk
+int pbfs_add_dmm_entry(FILE* image, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint128_t lba, char* name, PBFS_Metadata_Flags type) {
+    if (hdr->dmm_root_lba <= 1) {
+        fprintf(stderr, "Invalid DMM LBA in Header!\n");
+        return InvalidHeader;
+    }
+
+    PBFS_DMM dmm = {0};
+    fseek(image, LBA(hdr->dmm_root_lba, hdr->block_size), SEEK_SET);
+    if (fread(&dmm, sizeof(PBFS_DMM), 1, image) != 1) {
+        perror("Failed to read DMM root");
+        return FileError;
+    }
+
+    PBFS_DMM* current = &dmm;
+    uint128_t cur_lba = uint128_from_u64(hdr->dmm_root_lba);
+
+    for (int depth = 0; depth < PBFS_MAX_DMM_CHAIN; depth++) {
+        // If there is space in current DMM, add the entry
+        if (current->entry_count < PBFS_DMM_ENTRIES) {
+            PBFS_DMM_Entry* entry = &current->entries[current->entry_count];
+            entry->lba = lba;
+            entry->type = type;
+            strncpy(entry->name, name, sizeof(entry->name) - 1);
+            entry->name[sizeof(entry->name) - 1] = '\0';
+            current->entry_count++;
+
+            fseek(image, LBA(uint128_to_u64(cur_lba), hdr->block_size), SEEK_SET);
+            fwrite(current, sizeof(PBFS_DMM), 1, image);
+            return EXIT_SUCCESS;
+        }
+
+        // If current DMM is full, check for extender
+        if (UINT128_GT(current->extender_lba, UINT128_ZERO)) {
+            cur_lba = current->extender_lba;
+            fseek(image, LBA(uint128_to_u64(cur_lba), hdr->block_size), SEEK_SET);
+            if (fread(&dmm, sizeof(PBFS_DMM), 1, image) != 1) {
+                perror("Failed to read DMM extender");
+                return FileError;
+            }
+            current = &dmm;
+            continue;
+        }
+
+        // Need to allocate a new extender block
+        PBFS_DMM new_extender = {0};
+        new_extender.entry_count = 1;
+        PBFS_DMM_Entry* entry = &new_extender.entries[0];
+        entry->lba = lba;
+        entry->type = type;
+        strncpy(entry->name, name, sizeof(entry->name) - 1);
+        entry->name[sizeof(entry->name) - 1] = '\0';
+
+        uint128_t new_ext_lba = bitmap_find_blocks(bitmap, uint128_from_u32(1), image, hdr->block_size);
+        if (uint128_is_zero(&new_ext_lba)) {
+            fprintf(stderr, "Out of space for DMM extender!\n");
+            return NoSpaceAvailable;
+        }
+
+        // Write new extender to disk
+        fseek(image, LBA(uint128_to_u64(new_ext_lba), hdr->block_size), SEEK_SET);
+        fwrite(&new_extender, sizeof(PBFS_DMM), 1, image);
+        bitmap_set(bitmap, new_ext_lba, new_ext_lba, UINT128_ZERO, image, hdr->block_size, 1);
+
+        // Link current DMM to extender
+        current->extender_lba = new_ext_lba;
+        fseek(image, LBA(uint128_to_u64(cur_lba), hdr->block_size), SEEK_SET);
+        fwrite(current, sizeof(PBFS_DMM), 1, image);
+
+        return EXIT_SUCCESS;
+    }
+
+    fprintf(stderr, "DMM chain exceeded max depth!\n");
+    return NoSpaceAvailable;
+}
+
+// Adds a file to the disk EXTENDED
+int pbfs_add_ex(FILE* image, uint8_t* data, size_t data_size, PBFS_Header* hdr, char* name, uint32_t uid, uint32_t gid, PBFS_Metadata_Flags type, PBFS_Permission_Flags perms) {
+    // DATA should be PADDED to BLOCK SIZE!
+    if (hdr->bitmap_lba <= 1) {
+        fprintf(stderr, "Invalid Header!\n");
+        return InvalidHeader;
+    }
+    uint8_t* disk = (uint8_t*)calloc(1, hdr->block_size);
+    if (!disk) {
+        fprintf(stderr, "Allocation Failed!\n");
+        return AllocFailed;
+    }
+    fseek(image, LBA(hdr->bitmap_lba, hdr->block_size), SEEK_SET);
+    fread(disk, hdr->block_size, 1, image);
+
+    uint64_t data_blocks = data_size / hdr->block_size;
+
+    PBFS_Bitmap bitmap = {0};
+    fseek(image, LBA(hdr->bitmap_lba, hdr->block_size), SEEK_SET);
+    fread(&bitmap, sizeof(PBFS_Bitmap), 1, image);
+    uint128_t lba = bitmap_find_blocks(&bitmap, uint128_from_u64(data_blocks + 1), image, hdr->block_size);
+    if (uint128_is_zero(&lba) == 1) {
+        fprintf(stderr, "No Space left!\n");
+        free(disk);
+        return NoSpaceAvailable;
+    }
+
+    fseek(image, LBA(uint128_to_u64(lba), hdr->block_size), SEEK_SET);
+    PBFS_Metadata* metadata = (PBFS_Metadata*)disk;
+    memset(disk, 0, hdr->block_size); // To ensure no issues occur
+
+    metadata->uid = uid;
+    metadata->gid = gid;
+    metadata->permission_offset = 0; // Inbuilt
+
+    time_t now = time(NULL);
+    metadata->created_timestamp = (uint64_t)now;
+    metadata->modified_timestamp = (uint64_t)now;
+    metadata->data_size = uint128_from_u64(data_size);
+    metadata->data_offset = 2;
+    metadata->flags = (uint32_t)type;
+    metadata->ex_flags = (uint32_t)perms;
+    metadata->extender_offset = 0;
+
+    fwrite(disk, hdr->block_size, 1, image);
+    fseek(image, LBA(uint128_to_u64(lba) + 1, hdr->block_size), SEEK_SET);
+    fwrite(data, 1, data_size, image);
+
+    pbfs_add_dmm_entry(image, hdr, &bitmap, lba, name, type);
+
+    free(disk);
+    return EXIT_SUCCESS;
+}
+
 // Test and print Disk Info
-int pbfs_test(const char* image) {
+int pbfs_test(const char* image, uint8_t debug) {
     PBFS_Header* hdr = (PBFS_Header*)calloc(1, sizeof(PBFS_Header));
     if (!hdr) {
         perror("Failed to allocate memory!\n");
@@ -275,7 +496,7 @@ int pbfs_test(const char* image) {
         return InvalidHeader;
     }
 
-    printf(
+    if (debug == 1) printf(
         "=== Header Information ===\n"
         "Magic: %.6s\n"
         "Block Size: %d\nTotal Blocks: %lld\n"
@@ -315,44 +536,153 @@ int pbfs_test(const char* image) {
         return AllocFailed;
     }
 
-    if (hdr->boot_partition_lba <= 1)
-        printf("Info: No Boot Partition Found\n");
-    else
-        printf("\n=== Boot Partiton ===\nSize (In Blocks): %lld\n", (unsigned long long int)(hdr->data_start_lba - hdr->boot_partition_lba));
-    if (hdr->kernel_table_lba <= 1) {
-        printf("Info: No Kernel Table Found\n");
-    } else {
-        uint64_t kto = hdr->kernel_table_lba;
-        PBFS_Kernel_Table* kernel_table = (PBFS_Kernel_Table*)disk;
-        uint128_t test_lba = uint128_from_u32(1);
+    if (debug == 1) {
+        if (hdr->boot_partition_lba <= 1) {
+            printf("Info: No Boot Partition Found\n");
+        } else {
+            printf("\n=== Boot Partiton ===\nSize (In Blocks): %lld\n", (unsigned long long int)(hdr->data_start_lba - hdr->boot_partition_lba));
+        } 
+        if (hdr->kernel_table_lba <= 1) {
+            printf("Info: No Kernel Table Found\n");
+        } else {
+            uint64_t kto = hdr->kernel_table_lba;
+            PBFS_Kernel_Table* kernel_table = (PBFS_Kernel_Table*)disk;
+            uint128_t test_lba = uint128_from_u32(1);
 
-        printf("\n=== Kernel Table ===\n");
-        while (kto > 1) {
-            fseek(f, LBA(kto, hdr->block_size), SEEK_SET);
-            fread(disk, hdr->block_size, 1, f);
+            printf("\n=== Kernel Table ===\n");
+            while (kto > 1) {
+                fseek(f, LBA(kto, hdr->block_size), SEEK_SET);
+                fread(disk, hdr->block_size, 1, f);
 
-            for (int i = 0; i < PBFS_KERNEL_TABLE_ENTRIES; i++) {
-                PBFS_Kernel_Entry* entry = &kernel_table->entries[i];
-                if (UINT128_NEQ(entry->lba, test_lba))
-                    continue;
-                printf(
-                    "== Kernel Entry (%d) ==\n"
-                    "\tName: %.64s"
-                    "\tLBA: %lld\n",
-                    i, entry->name,
-                    (unsigned long long int)uint128_to_u64(entry->lba)
-                );
+                for (int i = 0; i < PBFS_KERNEL_TABLE_ENTRIES; i++) {
+                    PBFS_Kernel_Entry* entry = &kernel_table->entries[i];
+                    if (UINT128_NEQ(entry->lba, test_lba))
+                        continue;
+                    printf(
+                        "== Kernel Entry (%d) ==\n"
+                        "\tName: %.64s"
+                        "\tLBA: %lld\n",
+                        i, entry->name,
+                        (unsigned long long int)uint128_to_u64(entry->lba)
+                    );
+                }
+
+                kto = uint128_to_u64(kernel_table->extender_lba);
+            }
+        }
+        PBFS_DMM dmm = {0};
+        uint128_t cur_lba = uint128_from_u64(hdr->dmm_root_lba);
+
+        printf("\n=== Files/Dirs/... ===\n");
+        for (int depth = 0; depth < PBFS_MAX_DMM_CHAIN; depth++) {
+            fseek(f, LBA(uint128_to_u64(cur_lba), hdr->block_size), SEEK_SET);
+            if (fread(&dmm, sizeof(PBFS_DMM), 1, f) != 1) {
+                fprintf(stderr, "Failed to read DMM block at LBA %llu\n", (unsigned long long int)uint128_to_u64(cur_lba));
+                break;
             }
 
-            kto = uint128_to_u64(kernel_table->extender_lba);
+            for (uint32_t i = 0; i < dmm.entry_count; i++) {
+                PBFS_DMM_Entry* entry = &dmm.entries[i];
+                printf(
+                    "== DMM Entry (%d) ==\n"
+                    "\tName: %.64s\n"
+                    "\tLBA: %lld\n"
+                    "\tType: 0x%x\n",
+                    i, entry->name,
+                    (unsigned long long int)uint128_to_u64(entry->lba),
+                    entry->type
+                );
+                printf("(%d) %.64s (%s) at %lld\n", 
+                    i, 
+                    entry->name,
+                    (unsigned long long int)uint128_to_u64(entry->lba),
+                    entry->type);
+            }
+
+            // Follow extender if exists
+            if (UINT128_EQ(dmm.extender_lba, UINT128_ZERO))
+                break;
+
+            cur_lba = dmm.extender_lba;
         }
     }
 
-    printf("Success!\n");
+    if (debug) printf("Success!\n");
 
     free(hdr);
     free(disk);
     fclose(f);
+    return EXIT_SUCCESS;
+}
+
+// Adds a file to the disk
+int pbfs_add(const char* image, const char* file, char* name, char* perms, char* type, uint32_t gid, uint32_t uid) {
+    int out = pbfs_test(image, 0);
+    if (out != EXIT_SUCCESS) {
+        fprintf(stderr, "Invalid image!\n");
+        return out;
+    }
+
+    FILE* f = fopen(image, "rb+");
+    if (!f) {
+        perror("Failed to open image!\n");
+        return FileError;
+    }
+
+    fseek(f, 512, SEEK_SET);
+    PBFS_Header* hdr = (PBFS_Header*)calloc(1, sizeof(PBFS_Header));
+    if (!hdr) {
+        perror("Failed to Allocate Memory!\n");
+        fclose(f);
+        return AllocFailed;
+    }
+    fread(hdr, sizeof(PBFS_Header), 1, f);
+
+    PBFS_Permission_Flags perm_flags = parse_file_perms(perms);
+    PBFS_Metadata_Flags meta_flags = parse_file_type(type);
+    if (perm_flags == PERM_INVALID) {
+        fprintf(stderr, "Invalid Permission Flags: %s\n", perms);
+        fclose(f);
+        free(hdr);
+        return InvalidArgument;
+    } else if (meta_flags == METADATA_FLAG_INVALID) {
+        fprintf(stderr, "Invalid file type: %s\n", type);
+        fclose(f);
+        free(hdr);
+        return InvalidArgument;
+    }
+
+    FILE* file_to_add = fopen(file, "rb");
+    if (!f) {
+        perror("Failed to open file!\n");
+        fclose(f);
+        free(hdr);
+        return FileError;
+    }
+
+    fseek(file_to_add, 0, SEEK_END);
+    size_t data_size = ftell(file_to_add);
+    rewind(file_to_add);
+    size_t aligned_data_size = align_up(data_size, hdr->block_size);
+    uint8_t* data = (uint8_t*)calloc(aligned_data_size, 1);
+    if (!data) {
+        perror("Failed to Allocate memory!\n");
+        fclose(file_to_add);
+        fclose(f);
+        free(hdr);
+        return AllocFailed;
+    }
+    fread(data, 1, data_size, file_to_add);
+    fclose(file_to_add);
+
+    out = pbfs_add_ex(f, data, aligned_data_size, hdr, name, uid, gid, meta_flags, perm_flags);
+    fclose(f);
+    free(hdr);
+    free(data);
+    if (out != EXIT_SUCCESS) {
+        fprintf(stderr, "Failed To Add File!\n");
+        return out;
+    }
     return EXIT_SUCCESS;
 }
 
@@ -377,13 +707,18 @@ int main(int argc, char** argv) {
 
     uint8_t test_image = 0;
 
-    uint32_t block_size = 0;
-    uint128_t total_blocks = UINT128_ZERO;
-    uint128_t disk_size = UINT128_ZERO;
+    uint32_t block_size = 512;
+    uint128_t total_blocks = uint128_from_u32(2048);
+    uint128_t disk_size = uint128_from_u32(1048576);
     uint128_t volume_id = UINT128_ZERO;
     char disk_name[32];
 
-    char* filename = "";
+    char name[64];
+    uint32_t gid = 0;
+    uint32_t uid = 0;
+    char perms[6];
+    char type[6];
+
     char* filepath = "";
 
     if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
@@ -430,14 +765,47 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--add") == 0) {
             // Add a file
             // Check if the filename and filepath are also provided
-            if (i + 3 > argc) {
-                printf("Usage: pbfs-cli <image> %s <filename> <filepath>\n", argv[i]);
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
                 return InvalidUsage;
             }
             add_file = 1;
-            filename = argv[i + 1];
-            filepath = argv[i + 2];
+            filepath = argv[i + 1];
             i++;
+        } else if (strcmp(argv[i], "--gid") == 0) {
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <gid>\n", argv[i]);
+                return InvalidUsage;
+            }
+            gid = (uint32_t)atoi(argv[i + 1]);
+            i++;
+        } else if (strcmp(argv[i], "--uid") == 0) {
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <uid>\n", argv[i]);
+                return InvalidUsage;
+            }
+            uid = (uint32_t)atoi(argv[i + 1]);
+            i++;
+        } else if (strcmp(argv[i], "--name") == 0) {
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <name>\n", argv[i]);
+                return InvalidUsage;
+            }
+            strncpy(name, argv[i + 1], sizeof(name));
+            i++;
+        } else if (strcmp(argv[i], "--permissions") == 0) {
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <permissions>\n", argv[i]);
+                return InvalidUsage;
+            }
+            strncpy(perms, argv[i + 1], sizeof(perms));
+            i++;
+        } else if (strcmp(argv[i], "--type") == 0) {
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <type>\n", argv[i]);
+                return InvalidUsage;
+            }
+            strncpy(type, argv[i + 1], sizeof(type));
             i++;
         } else if (strcmp(argv[i], "-btl") == 0 || strcmp(argv[i], "--bootloader") == 0) {
             // Add a bootloader
@@ -495,7 +863,8 @@ int main(int argc, char** argv) {
         printf("Done!\n");
     }
     if (add_file) {
-        printf("Adding File [%s] to Image...\n", filename);
+        printf("Adding File [%s] to Image...\n", name);
+        pbfs_add(image, filepath, name, perms, type, gid, uid);
         printf("Done!\n");
     }
     if (add_bootloader) {
@@ -507,7 +876,7 @@ int main(int argc, char** argv) {
         printf("Done!\n");
     }
     if (test_image) {
-        pbfs_test(image);
+        pbfs_test(image, 1);
     }
 
     return EXIT_SUCCESS;

@@ -12,9 +12,17 @@
 "\t-tb/--total_blocks <count>: Define Total number of blocks (Format Only)\n" \
 "\t-dn/--disk_name <name>: Define the disk name (Format Only)\n" \
 "\t-v/--volume_id <id>: Sets the volume id of disk (Format Only)\n" \
+"\t--gid <id>: Sets the GID for the added file (ADD FILE Only)\n" \
+"\t--uid <id>: Sets the UID for the added file (ADD FILE Only)\n" \
+"\t--name <name>: Sets the name for the added file (ADD FILE Only)\n" \
+"\t--permissions <permissions>: Sets the Permissions for the added file (ADD FILE Only). Format -\n" \
+"\t\tr (read)/w (write)/e (execute)/s (system)/p (protected)/l (locked)\n" \
+"\t\tCan add multiple together, examples - rw (read+write) / res (read + execute + system)\n" \
+"\t--type <type>: Sets the Type for the added file (ADD FILE Only). Types -\n" \
+"\t\tdir, file, res (reserve), sys (system)\n" \
 "\t-f/--format: Format the disk\n" \
 "\t-c/--create: Create the disk\n" \
-"\t-a/--add <filename> <filepath>: Adds a file to the image.\n" \
+"\t-a/--add filepath>: Adds a file to the image.\n" \
 "\t-btl/--bootloader <filepath>: Adds a bootloader to the image (MBR).\n" \
 "\t-btp/--boot_partition <Number of Blocks>: Adds a Boot partition of specified Block Size.\n" \
 "\t-akt/--add_kernel_table: Reserves a Kernel Table Block (Extendable).\n" \

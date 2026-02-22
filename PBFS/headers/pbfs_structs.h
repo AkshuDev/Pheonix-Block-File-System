@@ -1,5 +1,6 @@
 #pragma once
 
+#include <linux/limits.h>
 #include <stdint.h>
 
 #define PBFS_MAGIC "PBFS\0\0"
@@ -8,6 +9,10 @@
 
 #define PBFS_KERNEL_TABLE_ENTRIES 6
 #define PBFS_DMM_ENTRIES 4
+
+#define PBFS_MAX_BITMAP_CHAIN 50
+#define PBFS_MAX_DMM_CHAIN 100
+#define PBFS_MAX_KERNEL_CHAIN 2
 
 typedef struct {
     uint32_t part[4]; // [0] = LSB, [3] = MSB
@@ -54,15 +59,14 @@ typedef struct {
     
     uint128_t lba;
 
-    uint8_t type;
-
-    uint8_t reserved[3];
+    uint32_t type;
 } PBFS_DMM_Entry __attribute__((packed));
 
 typedef struct {
     PBFS_DMM_Entry entries[PBFS_DMM_ENTRIES];
 
-    uint8_t reserved[96];
+    uint64_t entry_count;
+    uint8_t reserved[88];
     uint128_t extender_lba;
 } PBFS_DMM __attribute__((packed));
 
@@ -72,6 +76,7 @@ typedef struct {
 } PBFS_Extender __attribute__((packed));
 
 typedef enum {
+    PERM_INVALID = 0,
     PERM_READ = 1 << 0,
     PERM_WRITE = 1 << 1,
     PERM_EXEC = 1 << 2,
@@ -80,11 +85,20 @@ typedef enum {
     PERM_LOCKED = 1 << 5 // No delete
 } PBFS_Permission_Flags;
 
-typedef struct {
-    uint128_t owner_uuid;
-    uint128_t group_uuid;
+typedef enum {
+    METADATA_FLAG_INVALID = 0,
+    METADATA_FLAG_RES = 1 << 0,
+    METADATA_FLAG_PBFS = 1 << 1,
+    METADATA_FLAG_SYS = 1 << 2,
+    METADATA_FLAG_FILE = 1 << 3,
+    METADATA_FLAG_DIR = 1 << 4 
+} PBFS_Metadata_Flags;
 
-    uint8_t permission_offset; // Cur LBA + Offset = PERM LBA
+typedef struct {
+    uint32_t uid;
+    uint32_t gid;
+
+    uint8_t permission_offset; // Cur LBA + Offset = PERM LBA (if 0, metadata ex_flags used as perm flags)
 
     uint64_t created_timestamp;
     uint64_t modified_timestamp;
@@ -93,6 +107,7 @@ typedef struct {
     uint32_t data_offset;
 
     uint32_t flags;
+    uint32_t ex_flags;
     uint8_t extender_offset; // If Extender Offset <= Cur LBA, no extender
 } PBFS_Metadata __attribute__((packed));
 
