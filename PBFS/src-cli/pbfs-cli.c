@@ -173,6 +173,38 @@ static PBFS_Permission_Flags parse_file_perms(char* str) {
 
     return perms;
 }
+static const char* file_type_to_str(PBFS_Metadata_Flags type) {
+    switch (type) {
+        case METADATA_FLAG_INVALID: return "Invalid";
+        case METADATA_FLAG_DIR: return "Directory";
+        case METADATA_FLAG_FILE: return "File";
+        case METADATA_FLAG_SYS: return "System";
+        case METADATA_FLAG_RES: return "Reserved";
+        case METADATA_FLAG_PBFS: return "PBFS";
+        default: "Invalid";
+    }
+}
+static void file_perms_to_str(PBFS_Permission_Flags perms, char* out, size_t size) {
+    if (perms == PERM_INVALID) {
+        strncpy(out, "Invalid", size);
+        return;
+    }
+    if (size < 6) return;
+    size_t off = 0;
+    if (perms & PERM_READ)
+        out[off++] = 'r';
+    if (perms & PERM_WRITE)
+        out[off++] = 'w';
+    if (perms & PERM_EXEC)
+        out[off++] = 'e';
+    if (perms & PERM_SYS)
+        out[off++] = 's';
+    if (perms & PERM_LOCKED)
+        out[off++] = 'l';
+    if (perms & PERM_PROTECTED)
+        out[off++] = 'p';
+    return;
+}
 
 // Verifies the header
 int pbfs_verify_header(PBFS_Header* header) {
@@ -334,7 +366,7 @@ int pbfs_create(const char* image, uint32_t block_size, uint128_t total_blocks) 
 }
 
 // Adds a DMM entry to the disk
-int pbfs_add_dmm_entry(FILE* image, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint128_t lba, char* name, PBFS_Metadata_Flags type) {
+int pbfs_add_dmm_entry(FILE* image, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint128_t lba, char* name, PBFS_Metadata_Flags type, PBFS_Permission_Flags perms, uint64_t created_ts, uint64_t modified_ts) {
     if (hdr->dmm_root_lba <= 1) {
         fprintf(stderr, "Invalid DMM LBA in Header!\n");
         return InvalidHeader;
@@ -356,6 +388,9 @@ int pbfs_add_dmm_entry(FILE* image, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint1
             PBFS_DMM_Entry* entry = &current->entries[current->entry_count];
             entry->lba = lba;
             entry->type = type;
+            entry->created_timestamp = created_ts;
+            entry->modified_timestamp = modified_ts;
+            entry->perms = perms;
             strncpy(entry->name, name, sizeof(entry->name) - 1);
             entry->name[sizeof(entry->name) - 1] = '\0';
             current->entry_count++;
@@ -383,6 +418,9 @@ int pbfs_add_dmm_entry(FILE* image, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint1
         PBFS_DMM_Entry* entry = &new_extender.entries[0];
         entry->lba = lba;
         entry->type = type;
+        entry->created_timestamp = created_ts;
+        entry->modified_timestamp = modified_ts;
+        entry->perms = perms;
         strncpy(entry->name, name, sizeof(entry->name) - 1);
         entry->name[sizeof(entry->name) - 1] = '\0';
 
@@ -395,7 +433,8 @@ int pbfs_add_dmm_entry(FILE* image, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint1
         // Write new extender to disk
         fseek(image, LBA(uint128_to_u64(new_ext_lba), hdr->block_size), SEEK_SET);
         fwrite(&new_extender, sizeof(PBFS_DMM), 1, image);
-        bitmap_set(bitmap, new_ext_lba, new_ext_lba, UINT128_ZERO, image, hdr->block_size, 1);
+        fseek(image, LBA(hdr->bitmap_lba, hdr->block_size), SEEK_SET);
+        bitmap_set(bitmap, new_ext_lba, uint128_from_u64(hdr->bitmap_lba), UINT128_ZERO, image, hdr->block_size, 1);
 
         // Link current DMM to extender
         current->extender_lba = new_ext_lba;
@@ -436,7 +475,6 @@ int pbfs_add_ex(FILE* image, uint8_t* data, size_t data_size, PBFS_Header* hdr, 
         return NoSpaceAvailable;
     }
 
-    fseek(image, LBA(uint128_to_u64(lba), hdr->block_size), SEEK_SET);
     PBFS_Metadata* metadata = (PBFS_Metadata*)disk;
     memset(disk, 0, hdr->block_size); // To ensure no issues occur
 
@@ -453,11 +491,17 @@ int pbfs_add_ex(FILE* image, uint8_t* data, size_t data_size, PBFS_Header* hdr, 
     metadata->ex_flags = (uint32_t)perms;
     metadata->extender_offset = 0;
 
+    fseek(image, LBA(uint128_to_u64(lba), hdr->block_size), SEEK_SET);
     fwrite(disk, hdr->block_size, 1, image);
-    fseek(image, LBA(uint128_to_u64(lba) + 1, hdr->block_size), SEEK_SET);
     fwrite(data, 1, data_size, image);
+    fseek(image, LBA(hdr->bitmap_lba, hdr->block_size), SEEK_SET);
+    uint128_t current = lba;
+    for (uint64_t i = 0; i < data_blocks + 1; i++) {
+        bitmap_set(&bitmap, current, uint128_from_u64(hdr->bitmap_lba), UINT128_ZERO, image, hdr->block_size, 1);
+        uint128_inc(&current);
+    }
 
-    pbfs_add_dmm_entry(image, hdr, &bitmap, lba, name, type);
+    pbfs_add_dmm_entry(image, hdr, &bitmap, lba, name, type, perms, (uint64_t)now, (uint64_t)now);
 
     free(disk);
     return EXIT_SUCCESS;
@@ -583,20 +627,29 @@ int pbfs_test(const char* image, uint8_t debug) {
 
             for (uint32_t i = 0; i < dmm.entry_count; i++) {
                 PBFS_DMM_Entry* entry = &dmm.entries[i];
-                printf(
-                    "== DMM Entry (%d) ==\n"
-                    "\tName: %.64s\n"
-                    "\tLBA: %lld\n"
-                    "\tType: 0x%x\n",
-                    i, entry->name,
-                    (unsigned long long int)uint128_to_u64(entry->lba),
-                    entry->type
-                );
-                printf("(%d) %.64s (%s) at %lld\n", 
-                    i, 
+                struct tm* created = localtime(&entry->created_timestamp);
+                struct tm* modified = localtime(&entry->modified_timestamp);
+                char perms_str[10] = {0};
+                file_perms_to_str((PBFS_Permission_Flags)entry->perms, perms_str, 10);
+                printf("(%d) %.64s (%s) at %lld (%.10s)\n", 
+                    i,
                     entry->name,
+                    file_type_to_str((PBFS_Metadata_Flags)entry->type),
                     (unsigned long long int)uint128_to_u64(entry->lba),
-                    entry->type);
+                    perms_str
+                );
+                printf(
+                    "\tCreated: %04d-%02d-%02d\n",
+                    created->tm_year + 1900,
+                    created->tm_mon + 1,
+                    created->tm_mday
+                );
+                printf(
+                    "\tModified: %04d-%02d-%02d\n",
+                    modified->tm_year + 1900,
+                    modified->tm_mon + 1,
+                    modified->tm_mday
+                );
             }
 
             // Follow extender if exists

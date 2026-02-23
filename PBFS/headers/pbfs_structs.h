@@ -55,11 +55,11 @@ typedef struct {
 
 typedef struct {
     char name[64];
-    uint128_t capability_token;
-    
     uint128_t lba;
-
     uint32_t type;
+    uint32_t perms;
+    uint64_t created_timestamp;
+    uint64_t modified_timestamp;
 } PBFS_DMM_Entry __attribute__((packed));
 
 typedef struct {
