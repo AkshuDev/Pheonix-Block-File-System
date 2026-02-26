@@ -108,7 +108,7 @@ typedef struct {
 
     uint32_t flags;
     uint32_t ex_flags;
-    uint8_t extender_offset; // If Extender Offset <= Cur LBA, no extender
+    uint128_t extender_lba;
 } PBFS_Metadata __attribute__((packed));
 
 typedef struct {

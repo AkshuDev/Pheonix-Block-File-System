@@ -205,6 +205,48 @@ static void file_perms_to_str(PBFS_Permission_Flags perms, char* out, size_t siz
         out[off++] = 'p';
     return;
 }
+static void pbfs_free_file_blocks(FILE* fp, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint128_t metadata_lba) {
+    PBFS_Metadata meta;
+    fseek(fp, LBA(uint128_to_u64(metadata_lba), hdr->block_size), SEEK_SET);
+    if (fread(&meta, sizeof(PBFS_Metadata), 1, fp) != 1) return;
+
+    // Calculate blocks: Metadata block + Data blocks
+    uint64_t data_blocks = (uint128_to_u64(meta.data_size) + hdr->block_size - 1) / hdr->block_size;
+    uint128_t current_lba = metadata_lba;
+
+    // Free the metadata block and all subsequent data blocks
+    for (uint64_t i = 0; i < data_blocks + 1; i++) {
+        bitmap_set(bitmap, current_lba, uint128_from_u64(hdr->bitmap_lba), UINT128_ZERO, fp, hdr->block_size, 0);
+        uint128_inc(&current_lba);
+    }
+}
+static void pbfs_delete_recursive(FILE* fp, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint128_t dmm_lba) {
+    PBFS_DMM dmm;
+    uint128_t current_dmm_lba = dmm_lba;
+
+    while (UINT128_GT(current_dmm_lba, UINT128_ZERO)) {
+        fseek(fp, LBA(uint128_to_u64(current_dmm_lba), hdr->block_size), SEEK_SET);
+        if (fread(&dmm, sizeof(PBFS_DMM), 1, fp) != 1) break;
+
+        for (uint32_t i = 0; i < dmm.entry_count; i++) {
+            if (dmm.entries[i].type & METADATA_FLAG_DIR) {
+                // Recursively clear the subdirectory's DMM chain
+                pbfs_delete_recursive(fp, hdr, bitmap, dmm.entries[i].lba);
+            } else {
+                // Clear the file's data blocks
+                pbfs_free_file_blocks(fp, hdr, bitmap, dmm.entries[i].lba);
+            }
+        }
+
+        // Save extender LBA before freeing current DMM block
+        uint128_t next_dmm = dmm.extender_lba;
+        
+        // Free the DMM block itself in the bitmap
+        bitmap_set(bitmap, current_dmm_lba, uint128_from_u64(hdr->bitmap_lba), UINT128_ZERO, fp, hdr->block_size, 0);
+        
+        current_dmm_lba = next_dmm;
+    }
+}
 
 // Verifies the header
 int pbfs_verify_header(PBFS_Header* header) {
@@ -489,7 +531,7 @@ int pbfs_add_ex(FILE* image, uint8_t* data, size_t data_size, PBFS_Header* hdr, 
     metadata->data_offset = 2;
     metadata->flags = (uint32_t)type;
     metadata->ex_flags = (uint32_t)perms;
-    metadata->extender_offset = 0;
+    metadata->extender_lba = UINT128_ZERO;
 
     fseek(image, LBA(uint128_to_u64(lba), hdr->block_size), SEEK_SET);
     fwrite(disk, hdr->block_size, 1, image);
@@ -632,7 +674,7 @@ int pbfs_test(const char* image, uint8_t debug) {
                 char perms_str[10] = {0};
                 file_perms_to_str((PBFS_Permission_Flags)entry->perms, perms_str, 10);
                 printf("(%d) %.64s (%s) at %lld (%.10s)\n", 
-                    i,
+                    i + (depth * PBFS_DMM_ENTRIES),
                     entry->name,
                     file_type_to_str((PBFS_Metadata_Flags)entry->type),
                     (unsigned long long int)uint128_to_u64(entry->lba),
@@ -739,6 +781,336 @@ int pbfs_add(const char* image, const char* file, char* name, char* perms, char*
     return EXIT_SUCCESS;
 }
 
+// Removes a file from the disk
+int pbfs_remove(const char* image_path, const char* name) {
+    FILE* fp = fopen(image_path, "rb+");
+    if (!fp) return FileError;
+
+    PBFS_Header hdr;
+    fseek(fp, 512, SEEK_SET);
+    fread(&hdr, sizeof(PBFS_Header), 1, fp);
+
+    PBFS_Bitmap bitmap;
+    fseek(fp, LBA(hdr.bitmap_lba, hdr.block_size), SEEK_SET);
+    fread(&bitmap, sizeof(PBFS_Bitmap), 1, fp);
+
+    PBFS_DMM dmm;
+    uint128_t cur_dmm_lba = uint128_from_u64(hdr.dmm_root_lba);
+    
+    while (UINT128_GT(cur_dmm_lba, UINT128_ZERO)) {
+        fseek(fp, LBA(uint128_to_u64(cur_dmm_lba), hdr.block_size), SEEK_SET);
+        fread(&dmm, sizeof(PBFS_DMM), 1, fp);
+
+        for (uint32_t i = 0; i < dmm.entry_count; i++) {
+            if (strcmp(dmm.entries[i].name, name) == 0) {               
+                // Check for protection flag
+                if (dmm.entries[i].perms & PERM_LOCKED) {
+                    fprintf(stderr, "Error: File is locked and cannot be deleted.\n");
+                    fclose(fp);
+                    return PermissionDenied;
+                }
+
+                // Execute Deletion
+                if (dmm.entries[i].type & METADATA_FLAG_DIR) {
+                    pbfs_delete_recursive(fp, &hdr, &bitmap, dmm.entries[i].lba);
+                } else {
+                    pbfs_free_file_blocks(fp, &hdr, &bitmap, dmm.entries[i].lba);
+                }
+
+                // Remove entry from current DMM block by shifting
+                for (uint32_t j = i; j < dmm.entry_count - 1; j++) {
+                    dmm.entries[j] = dmm.entries[j+1];
+                }
+                dmm.entry_count--;
+
+                // Update the DMM block on disk
+                fseek(fp, LBA(uint128_to_u64(cur_dmm_lba), hdr.block_size), SEEK_SET);
+                fwrite(&dmm, sizeof(PBFS_DMM), 1, fp);
+                
+                fclose(fp);
+                return EXIT_SUCCESS;
+            }
+        }
+        cur_dmm_lba = dmm.extender_lba;
+    }
+
+    fclose(fp);
+    return FileNotFound;
+}
+
+// Lists a dir from the disk
+int pbfs_list_dir(const char* image_path, const char* dir_path) {
+    FILE* fp = fopen(image_path, "rb");
+    if (!fp) {
+        perror("List failed: Could not open image");
+        return FileError;
+    }
+
+    PBFS_Header hdr;
+    fseek(fp, 512, SEEK_SET);
+    if (fread(&hdr, sizeof(PBFS_Header), 1, fp) != 1) {
+        fprintf(stderr, "Error: Failed to read header\n");
+        fclose(fp); return InvalidHeader;
+    }
+
+    PBFS_DMM dmm;
+    uint128_t cur_dmm_lba = uint128_from_u64(hdr.dmm_root_lba);
+    int found = 0;
+
+    // Search the entire DMM chain for the path name
+    while (UINT128_GT(cur_dmm_lba, UINT128_ZERO)) {
+        fseek(fp, LBA(uint128_to_u64(cur_dmm_lba), hdr.block_size), SEEK_SET);
+        if (fread(&dmm, sizeof(PBFS_DMM), 1, fp) != 1) break;
+
+        for (uint32_t i = 0; i < dmm.entry_count; i++) {
+            if (strcmp(dmm.entries[i].name, dir_path) == 0) {
+                found = 1;
+                const char* type_name = file_type_to_str(dmm.entries[i].type);
+
+                if (dmm.entries[i].type & METADATA_FLAG_DIR) {
+                    printf("Contents of Directory [%s]:\n", dir_path);
+                    // TODO: Make a Directory DMM
+                    PBFS_DMM sub_dmm;
+                    fseek(fp, LBA(uint128_to_u64(dmm.entries[i].lba), hdr.block_size), SEEK_SET);
+                    if (fread(&sub_dmm, sizeof(PBFS_DMM), 1, fp) == 1) {
+                        for (uint32_t j = 0; j < sub_dmm.entry_count; j++) {
+                            printf(
+                                "  %-16s  %s\n", sub_dmm.entries[j].name, 
+                                file_type_to_str(sub_dmm.entries[j].type)
+                            );
+                        }
+                    }
+                } else {
+                    // It's a file, just show the entry info
+                    printf(
+                        "%-16s  %s  LBA: %llu\n", dmm.entries[i].name, type_name, 
+                        (unsigned long long)uint128_to_u64(dmm.entries[i].lba)
+                    );
+                }
+                break;
+            }
+        }
+        if (found) break;
+        cur_dmm_lba = dmm.extender_lba;
+    }
+
+    if (!found) fprintf(stderr, "Error: Path '%s' not found in DMM.\n", dir_path);
+    fclose(fp);
+    return found ? EXIT_SUCCESS : FileNotFound;
+}
+
+// Updates a file on the disk
+int pbfs_update_file(const char* image_path, const char* name, uint8_t* new_data, size_t new_size) {
+    FILE* fp = fopen(image_path, "rb+");
+    if (!fp) { perror("Update failed"); return FileError; }
+
+    PBFS_Header hdr;
+    fseek(fp, 512, SEEK_SET);
+    fread(&hdr, sizeof(PBFS_Header), 1, fp);
+
+    PBFS_Bitmap bitmap;
+    fseek(fp, LBA(hdr.bitmap_lba, hdr.block_size), SEEK_SET);
+    fread(&bitmap, sizeof(PBFS_Bitmap), 1, fp);
+
+    PBFS_DMM dmm;
+    uint128_t cur_dmm_lba = uint128_from_u64(hdr.dmm_root_lba);
+    
+    while (UINT128_GT(cur_dmm_lba, UINT128_ZERO)) {
+        fseek(fp, LBA(uint128_to_u64(cur_dmm_lba), hdr.block_size), SEEK_SET);
+        fread(&dmm, sizeof(PBFS_DMM), 1, fp);
+
+        for (uint32_t i = 0; i < dmm.entry_count; i++) {
+            if (strcmp(dmm.entries[i].name, name) == 0) {
+                PBFS_Metadata meta;
+                uint64_t meta_lba = uint128_to_u64(dmm.entries[i].lba);
+                fseek(fp, LBA(meta_lba, hdr.block_size), SEEK_SET);
+                fread(&meta, sizeof(PBFS_Metadata), 1, fp);
+
+                uint64_t old_size = uint128_to_u64(meta.data_size);
+                uint64_t old_blocks = (old_size + hdr.block_size - 1) / hdr.block_size;
+                uint64_t new_blocks = (new_size + hdr.block_size - 1) / hdr.block_size;
+
+                size_t first_chunk = (new_size < old_size) ? new_size : old_size;
+                fseek(fp, LBA(meta_lba, hdr.block_size) + sizeof(PBFS_Metadata), SEEK_SET);
+                fwrite(new_data, 1, first_chunk, fp);
+
+                if (new_size > old_size) {
+                    uint128_t ext_lba = bitmap_find_blocks(&bitmap, uint128_from_u32(1), fp, hdr.block_size);
+                    if (uint128_is_zero(&ext_lba)) {
+                        fprintf(stderr, "Insufficient space for file extension!\n");
+                        fclose(fp); return NoSpaceAvailable;
+                    }
+
+                    // Write overflow data to the extension block
+                    fseek(fp, LBA(uint128_to_u64(ext_lba), hdr.block_size), SEEK_SET);
+                    fwrite(new_data + first_chunk, 1, new_size - first_chunk, fp);
+                    
+                    // Update original metadata to point to extension
+                    uint128_t ext = UINT128_ZERO;
+                    uint128_sub(&ext, &ext_lba, &dmm.entries[i].lba);
+                    meta.extender_lba = ext;
+                    bitmap_set(&bitmap, ext_lba, uint128_from_u64(hdr.bitmap_lba), UINT128_ZERO, fp, hdr.block_size, 1);
+                }
+
+                meta.data_size = uint128_from_u64(new_size);
+                meta.modified_timestamp = (uint64_t)time(NULL);
+                fseek(fp, LBA(meta_lba, hdr.block_size), SEEK_SET);
+                fwrite(&meta, sizeof(PBFS_Metadata), 1, fp);
+
+                fclose(fp);
+                return EXIT_SUCCESS;
+            }
+        }
+        cur_dmm_lba = dmm.extender_lba;
+    }
+    fclose(fp);
+    return FileNotFound;
+}
+
+// Adds a dir
+int pbfs_add_dir(const char* image, char* name, char* perms, uint32_t gid, uint32_t uid) {
+    FILE* f = fopen(image, "rb+");
+    if (!f) {
+        perror("Failed to open image for directory creation");
+        return FileError;
+    }
+
+    PBFS_Header hdr;
+    fseek(f, 512, SEEK_SET);
+    if (fread(&hdr, sizeof(PBFS_Header), 1, f) != 1) {
+        fprintf(stderr, "Error: Failed to read image header\n");
+        fclose(f); return InvalidHeader;
+    }
+
+    PBFS_Permission_Flags perm_flags = parse_file_perms(perms);
+    if (perm_flags == PERM_INVALID) {
+        fprintf(stderr, "Error: Invalid permission flags '%s'\n", perms);
+        fclose(f); return InvalidArgument;
+    }
+
+    PBFS_Bitmap bitmap;
+    fseek(f, LBA(hdr.bitmap_lba, hdr.block_size), SEEK_SET);
+    fread(&bitmap, sizeof(PBFS_Bitmap), 1, f);
+
+    // Find a block for the new directory's Metadata
+    uint128_t dir_lba = bitmap_find_blocks(&bitmap, uint128_from_u32(1), f, hdr.block_size);
+    if (uint128_is_zero(&dir_lba)) {
+        fprintf(stderr, "Error: No space available for new directory Metadata\n");
+        fclose(f); return NoSpaceAvailable;
+    }
+
+    // Initialize the new empty Metadata block
+    PBFS_Metadata new_md = {0};
+    new_md.data_offset = 0;
+    new_md.data_size = UINT128_ZERO;
+    new_md.extender_lba = UINT128_ZERO;
+    new_md.ex_flags = perm_flags;
+    new_md.flags = METADATA_FLAG_DIR;
+    new_md.gid = gid;
+    new_md.uid = uid;
+    new_md.permission_offset = 0;
+    time_t now = {0};
+    time(&now);
+    new_md.created_timestamp = (uint64_t)now;
+    new_md.modified_timestamp = (uint64_t)now;
+    fseek(f, LBA(uint128_to_u64(dir_lba), hdr.block_size), SEEK_SET);
+    fwrite(&new_md, sizeof(PBFS_Metadata), 1, f);
+
+    // Mark the block as used
+    bitmap_set(&bitmap, dir_lba, uint128_from_u64(hdr.bitmap_lba), UINT128_ZERO, f, hdr.block_size, 1);
+
+    // Add entry to the root/parent DMM
+    int out = pbfs_add_dmm_entry(f, &hdr, &bitmap, dir_lba, name, METADATA_FLAG_DIR, perm_flags, (uint64_t)now, (uint64_t)now);
+    
+    fclose(f);
+    if (out != EXIT_SUCCESS) {
+        fprintf(stderr, "Error: Failed to add directory entry to DMM\n");
+    }
+    return out;
+}
+
+// Reads a file
+int pbfs_read_file(const char* image_path, const char* name, uint8_t** out_buffer, size_t* out_size) {
+    FILE* fp = fopen(image_path, "rb");
+    if (!fp) {
+    perror("Read failed: Could not open image");
+    return FileError;
+    }
+
+    PBFS_Header hdr;
+    fseek(fp, 512, SEEK_SET);
+    if (fread(&hdr, sizeof(PBFS_Header), 1, fp) != 1) {
+        fprintf(stderr, "Error: Failed to read header\n");
+        fclose(fp); return InvalidHeader;
+    }
+
+    // Locate the file
+    PBFS_DMM dmm;
+    uint128_t cur_dmm_lba = uint128_from_u64(hdr.dmm_root_lba);
+    uint128_t file_lba = UINT128_ZERO;
+
+    while (UINT128_GT(cur_dmm_lba, UINT128_ZERO)) {
+        fseek(fp, LBA(uint128_to_u64(cur_dmm_lba), hdr.block_size), SEEK_SET);
+        if (fread(&dmm, sizeof(PBFS_DMM), 1, fp) != 1) break;
+
+        for (uint32_t i = 0; i < dmm.entry_count; i++) {
+            if (strcmp(dmm.entries[i].name, name) == 0) {
+                if (dmm.entries[i].type & METADATA_FLAG_DIR) {
+                    fprintf(stderr, "Error: '%s' is a directory.\n", name);
+                    fclose(fp); return InvalidArgument;
+                }
+                file_lba = dmm.entries[i].lba;
+                break;
+            }
+        }
+        if (UINT128_GT(file_lba, UINT128_ZERO)) break;
+        cur_dmm_lba = dmm.extender_lba;
+    }
+
+    if (uint128_is_zero(&file_lba)) {
+        fprintf(stderr, "Error: File '%s' not found.\n", name);
+        fclose(fp); return FileNotFound;
+    }
+
+    PBFS_Metadata meta;
+    fseek(fp, LBA(uint128_to_u64(file_lba), hdr.block_size), SEEK_SET);
+    fread(&meta, sizeof(PBFS_Metadata), 1, fp);
+
+    size_t total_size = (size_t)uint128_to_u64(meta.data_size);
+    uint8_t* buffer = (uint8_t*)malloc(total_size);
+    if (!buffer) {
+        perror("Failed to allocate read buffer");
+        fclose(fp); return AllocFailed;
+    }
+
+    // Chain Reading
+    size_t bytes_read = 0;
+    uint128_t next_lba = file_lba;
+
+    while (bytes_read < total_size && UINT128_GT(next_lba, UINT128_ZERO)) {
+        uint64_t current_raw_lba = uint128_to_u64(next_lba);
+        
+        fseek(fp, LBA(current_raw_lba, hdr.block_size), SEEK_SET);
+        if (fread(&meta, sizeof(PBFS_Metadata), 1, fp) != 1) break;
+
+        size_t remaining = total_size - bytes_read;
+        size_t base_capacity = hdr.block_size - sizeof(PBFS_Metadata);
+        size_t chunk_size = (remaining < base_capacity) ? remaining : base_capacity;
+        
+        fseek(fp, LBA(current_raw_lba, hdr.block_size) + sizeof(PBFS_Metadata), SEEK_SET);
+        fread(buffer + bytes_read, 1, chunk_size, fp);
+        
+        bytes_read += chunk_size;
+        next_lba = meta.extender_lba; 
+    }
+
+    *out_buffer = buffer;
+    *out_size = total_size;
+
+    fclose(fp);
+    return EXIT_SUCCESS;
+}
+
 // Main function
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -750,7 +1122,14 @@ int main(int argc, char** argv) {
     uint8_t format_image = 0;
 
     uint8_t add_file = 0;
+    uint8_t add_dir = 0;
     uint8_t add_bootloader = 0;
+    uint8_t remove_file = 0;
+    uint8_t update_file = 0;
+
+    uint8_t list_file = 0;
+    uint8_t read_file = 0;
+    uint8_t read_file_binary = 0;
 
     uint8_t bootpart = 0;
     int bootpartsize = 0;
@@ -817,12 +1196,65 @@ int main(int argc, char** argv) {
             create_image = 1;
         } else if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--add") == 0) {
             // Add a file
-            // Check if the filename and filepath are also provided
             if (i + 2 > argc) {
                 printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
                 return InvalidUsage;
             }
             add_file = 1;
+            filepath = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--remove") == 0) {
+            // Removes a file
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
+                return InvalidUsage;
+            }
+            remove_file = 1;
+            filepath = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "-u") == 0 || strcmp(argv[i], "--update") == 0) {
+            // Add a file
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
+                return InvalidUsage;
+            }
+            update_file = 1;
+            filepath = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "-ad") == 0 || strcmp(argv[i], "--add_dir") == 0) {
+            // Add a dir
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <path>\n", argv[i]);
+                return InvalidUsage;
+            }
+            add_dir = 1;
+            filepath = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--list") == 0) {
+            // List a path
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <path>\n", argv[i]);
+                return InvalidUsage;
+            }
+            list_file = 1;
+            filepath = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "-rf") == 0 || strcmp(argv[i], "--read_file") == 0) {
+            // Read a file
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <path>\n", argv[i]);
+                return InvalidUsage;
+            }
+            read_file = 1;
+            filepath = argv[i + 1];
+            i++;
+        } else if (strcmp(argv[i], "-rfb") == 0 || strcmp(argv[i], "--read_file_binary") == 0) {
+            // Read a file
+            if (i + 2 > argc) {
+                printf("Usage: pbfs-cli <image> %s <path>\n", argv[i]);
+                return InvalidUsage;
+            }
+            read_file_binary = 1;
             filepath = argv[i + 1];
             i++;
         } else if (strcmp(argv[i], "--gid") == 0) {
@@ -877,7 +1309,7 @@ int main(int argc, char** argv) {
             bootpartsize = (int)atoi(argv[i + 1]);
             bootpart = 1;
             i++;
-        } else if (strcmp(argv[i], "-akt") == 0 || strcmp(argv[i], "--add_kernel_table") == 0) {
+        } else if (strcmp(argv[i], "-rkt") == 0 || strcmp(argv[i], "--reserve_kernel_table") == 0) {
             kerneltable = 1;
         } else if (strcmp(argv[i], "-k") == 0 || strcmp(argv[i], "--kernel") == 0) {
             if (i + 2 > argc) {
@@ -905,7 +1337,7 @@ int main(int argc, char** argv) {
         }
         printf("Done!\n");
     }
-    if (format_image) {
+    else if (format_image) {
         printf("Formating Image...\n");
         int out = pbfs_format(image, kerneltable, bootpart, bootpartsize, block_size, total_blocks, disk_name, volume_id);
 
@@ -915,21 +1347,129 @@ int main(int argc, char** argv) {
         }
         printf("Done!\n");
     }
-    if (add_file) {
+    else if (add_file) {
+        if (strlen(filepath) < 1 || strlen(name) < 1) {
+            strcpy(name, filepath);
+        }
         printf("Adding File [%s] to Image...\n", name);
-        pbfs_add(image, filepath, name, perms, type, gid, uid);
+        int out = pbfs_add(image, filepath, name, perms, type, gid, uid);
+        if (out != EXIT_SUCCESS) {
+            fprintf(stderr, "An Error Occurred!\n");
+            return out;
+        }
         printf("Done!\n");
     }
-    if (add_bootloader) {
+    else if (add_dir) {
+        printf("Adding Dir [%s] to Image...\n", filepath);
+        int out = pbfs_add_dir(image, filepath, perms, gid, uid);
+        if (out != EXIT_SUCCESS) {
+            fprintf(stderr, "An Error Occurred!\n");
+            return out;
+        }
+        printf("Done!\n");
+    }
+    else if (remove_file) {
+        if (strlen(filepath) < 1 || strlen(name) < 1) {
+            strcpy(name, filepath);
+        }
+        printf("Removing File [%s] from Image...\n", filepath);
+        int out = pbfs_remove(image, filepath);
+        if (out != EXIT_SUCCESS) {
+            fprintf(stderr, "An Error Occurred!\n");
+            return out;
+        }
+        printf("Done!\n");
+    }
+    else if (update_file) {
+        if (strlen(filepath) < 1 || strlen(name) < 1) {
+            strcpy(name, filepath);
+        }
+        printf("Updating File [%s] from Image...\n", name);
+        FILE* f = fopen(filepath, "rb");
+        if (!f) {
+            fprintf(stderr, "Failed to open file %s. ", filepath);
+            perror("Failed to open file!\n");
+            return FileError;
+        }
+        fseek(f, 0, SEEK_END);
+        size_t size = ftell(f);
+        rewind(f);
+        uint8_t* data = (uint8_t*)malloc(size);
+        if (!data) {
+            perror("Failed to allocate memory\n");
+            fclose(f);
+            return AllocFailed;
+        }
+        fread(data, size, 1, f);
+        fclose(f);
+        int out = pbfs_update_file(image, name, data, size);
+        if (out != EXIT_SUCCESS) {
+            free(data);
+            fprintf(stderr, "An Error Occurred!\n");
+            return out;
+        }
+        free(data);
+        printf("Done!\n");
+    }
+    else if (add_bootloader) {
         printf("Adding bootloader [%s] to Image...\n", filepath);
         printf("Done!\n");
     }
-    if (add_kernel) {
+    else if (add_kernel) {
         printf("Adding Kernel [%s]...\n", filepath); 
         printf("Done!\n");
     }
-    if (test_image) {
-        pbfs_test(image, 1);
+    else if (test_image) {
+        int out = pbfs_test(image, 1);
+        if (out != EXIT_SUCCESS) {
+            fprintf(stderr, "An Error Occurred!\n");
+            return out;
+        }
+    } 
+    else if (list_file) {
+        printf("Listing [%s] from Image...\n", filepath);
+        int out = pbfs_list_dir(image, filepath);
+        if (out != EXIT_SUCCESS) {
+            fprintf(stderr, "An Error Occurred!\n");
+            return out;
+        }
+        printf("Done!\n");
+    }
+    else if (read_file_binary) {
+        printf("Reading [%s] from Image...\n", filepath);
+        uint8_t* data = NULL;
+        size_t data_size = 0;
+        int out = pbfs_read_file(image, filepath, &data, &data_size);
+        if (out != EXIT_SUCCESS) {
+            if (data) free(data);
+            fprintf(stderr, "An Error Occurred!\n");
+            return out;
+        }
+        for (size_t i = 0; i < data_size; i++) {
+            printf("%02X", data[i]);
+            if (i < data_size - 1) {
+                printf(" ");
+            }
+        }
+        free(data);
+        printf("\nDone!\n");
+    }
+    else if (read_file) {
+        printf("Reading [%s] from Image...\n", filepath);
+        uint8_t* data = NULL;
+        size_t data_size = 0;
+        int out = pbfs_read_file(image, filepath, &data, &data_size);
+        if (out != EXIT_SUCCESS) {
+            if (data) free(data);
+            fprintf(stderr, "An Error Occurred!\n");
+            return out;
+        }
+        for (size_t i = 0; i < data_size; i++) {
+            if (data[i] == '\0') break;
+            printf("%c", (char)data[i]);
+        }
+        free(data);
+        printf("\nDone!\n");
     }
 
     return EXIT_SUCCESS;
