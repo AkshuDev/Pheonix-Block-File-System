@@ -23,6 +23,11 @@ void bitmap_bit_clear(uint8_t* bitmap, uint64_t bit_index);
 int bitmap_bit_test(uint8_t* bitmap, uint64_t bit_index);
 int is_lba_in_current_bitmap(uint128_t lba, uint128_t bitmap_index);
 
+void path_normalize(char* path, char* out, int out_size);
+void path_dirname(char* path, char* out, int out_size);
+void path_basename(char* path, char* out, int out_size);
+void path_part(char* path, int index, char* out, int out_size);
+
 static const uint128_t zero128 = {{0, 0, 0, 0}};
 
 #define UINT128_EQ(a, b) (uint128_cmp(&(a), &(b)) == 0)

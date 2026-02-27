@@ -11,8 +11,11 @@
 #define PBFS_DMM_ENTRIES 4
 
 #define PBFS_MAX_BITMAP_CHAIN 50
-#define PBFS_MAX_DMM_CHAIN 100
+#define PBFS_MAX_DMM_CHAIN 2048
 #define PBFS_MAX_KERNEL_CHAIN 2
+
+#define PBFS_MAX_NAME_LEN 64
+#define PBFS_MAX_PATH_LEN 4096
 
 typedef struct {
     uint32_t part[4]; // [0] = LSB, [3] = MSB
@@ -54,7 +57,7 @@ typedef struct {
 } PBFS_Kernel_Table __attribute__((packed));
 
 typedef struct {
-    char name[64];
+    char name[PBFS_MAX_NAME_LEN];
     uint128_t lba;
     uint32_t type;
     uint32_t perms;

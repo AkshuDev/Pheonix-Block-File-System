@@ -139,3 +139,172 @@ int is_lba_in_current_bitmap(uint128_t lba, uint128_t bitmap_index) {
     uint128_add(&range_end, &range_start, &max_bitmap_block_range);
     return (UINT128_GTE(lba, range_start) && UINT128_LT(lba, range_end));
 }
+
+// some statics 
+static int pbfs_strlen(const char* s) {
+    int i = 0;
+    while (s[i]) i++;
+    return i;
+}
+
+static void pbfs_strcpy(char* dst, const char* src) {
+    while (*src) {
+        *dst++ = *src++;
+    }
+    *dst = 0;
+}
+
+static void pbfs_memcpy(char* dst, const char* src, int n) {
+    for (int i = 0; i < n; i++)
+        dst[i] = src[i];
+}
+
+// Path features and stuff
+void path_normalize(char* path, char* out, int out_size) {
+    int i = 0;
+    int o = 0;
+
+    if (out_size <= 0)
+        return;
+
+    // '~' expansion
+    if (path[0] == '~') {
+        const char* home = "/root";
+        int h = 0;
+
+        while (home[h] && o < out_size - 1) {
+            out[o++] = home[h++];
+        }
+
+        i = 1; // skip '~'
+    }
+
+    int prev_was_slash = 0;
+
+    while (path[i] && o < out_size - 1) {
+        if (path[i] == '/') {
+            if (!prev_was_slash) {
+                out[o++] = '/';
+                prev_was_slash = 1;
+            }
+        } else {
+            out[o++] = path[i];
+            prev_was_slash = 0;
+        }
+        i++;
+    }
+
+    // Remove trailing slash (except root)
+    if (o > 1 && out[o - 1] == '/')
+        o--;
+
+    out[o] = 0;
+}
+
+void path_dirname(char* path, char* out, int out_size) {
+    int len = pbfs_strlen(path);
+
+    if (len == 0) {
+        if (out_size > 0) {
+            out[0] = '/';
+            if (out_size > 1) out[1] = 0;
+        }
+        return;
+    }
+
+    int last = -1;
+    for (int i = 0; i < len; i++) {
+        if (path[i] == '/')
+            last = i;
+    }
+
+    if (last == -1) {
+        if (out_size > 0) {
+            out[0] = '/'; 
+            if (out_size > 1) out[1] = 0;
+        }
+        return;
+    }
+
+    if (last == 0) {
+        if (out_size > 0) {
+            out[0] = '/';
+            if (out_size > 1) out[1] = 0;
+        }
+        return;
+    }
+
+    int copy_len = (last < out_size - 1) ? last : out_size - 1;
+
+    for (int i = 0; i < copy_len; i++)
+        out[i] = path[i];
+
+    out[copy_len] = 0;
+}
+
+void path_basename(char* path, char* out, int out_size) {
+    int len = pbfs_strlen(path);
+
+    if (len == 0) {
+        if (out_size > 0) out[0] = 0;
+        return;
+    }
+
+    // Skip trailing slashes
+    int end = len - 1;
+    while (end > 0 && path[end] == '/')
+        end--;
+
+    int start = end;
+
+    while (start > 0 && path[start - 1] != '/')
+        start--;
+
+    int part_len = end - start + 1;
+    if (part_len >= out_size)
+        part_len = out_size - 1;
+
+    for (int i = 0; i < part_len; i++)
+        out[i] = path[start + i];
+
+    out[part_len] = 0;
+}
+
+void path_part(char* path, int index, char* out, int out_size) {
+    int len = pbfs_strlen(path);
+    int current_part = 0;
+    int i = 0;
+
+    // Skip leading slashes
+    while (path[i] == '/')
+        i++;
+
+    while (i < len) {
+        int start = i;
+
+        while (i < len && path[i] != '/')
+            i++;
+
+        int end = i;
+
+        if (current_part == index) {
+            int part_len = end - start;
+            if (part_len >= out_size)
+                part_len = out_size - 1;
+
+            for (int j = 0; j < part_len; j++)
+                out[j] = path[start + j];
+
+            out[part_len] = 0;
+            return;
+        }
+
+        current_part++;
+
+        while (path[i] == '/')
+            i++;
+    }
+
+    if (out_size > 0)
+        out[0] = 0;
+}

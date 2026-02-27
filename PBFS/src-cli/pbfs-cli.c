@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#define LBA(lba, block_size) lba * block_size
+#define LBA(lba, block_size) ((lba) * (block_size))
 
 static size_t align_up(size_t value, size_t alignment) {
     if (alignment == 0) return value;
@@ -35,7 +35,7 @@ static int bitmap_test_recursive(PBFS_Bitmap* current, uint128_t lba, uint128_t 
     uint128_inc(&bitmap_idx_inced);
     return bitmap_test_recursive(&next, lba, bitmap_idx_inced, fp, block_size);
 }
-static uint128_t bitmap_find_blocks(PBFS_Bitmap* start, uint128_t blocks, FILE* fp, int block_size) {
+static uint128_t bitmap_find_blocks(PBFS_Bitmap* start, uint64_t start_lba, uint128_t blocks, FILE* fp, int block_size) {
     if (uint128_is_zero(&blocks))
         return UINT128_ZERO;
     
@@ -47,9 +47,8 @@ static uint128_t bitmap_find_blocks(PBFS_Bitmap* start, uint128_t blocks, FILE* 
     uint8_t in_run = 0;
 
     for (uint64_t depth = 0; depth < PBFS_MAX_BITMAP_CHAIN; depth++) {
-
-        for (uint64_t i = 0; i < (PBFS_BITMAP_LIMIT * 8); i++) {
-
+        uint64_t slba = depth == 0 ? start_lba : 0;
+        for (uint64_t i = slba; i < (PBFS_BITMAP_LIMIT * 8); i++) {
             uint128_t global_lba;
             uint128_mul_u32(&global_lba, &bitmap_idx, PBFS_BITMAP_LIMIT * 8);
             uint128_t i_128 = uint128_from_u64(i);
@@ -158,7 +157,7 @@ static PBFS_Permission_Flags parse_file_perms(char* str) {
     strncpy(str_c, str, sizeof(str_c));
     size_t slen = strlen(str_c);
 
-    for (uint32_t i = 0; i < slen; i++) {
+    for (uint64_t i = 0; i < slen; i++) {
         char c = str_c[i];
         switch (c) {
             case 'r': perms |= PERM_READ; break;
@@ -189,7 +188,7 @@ static void file_perms_to_str(PBFS_Permission_Flags perms, char* out, size_t siz
         strncpy(out, "Invalid", size);
         return;
     }
-    if (size < 6) return;
+    if (size < 7) return;
     size_t off = 0;
     if (perms & PERM_READ)
         out[off++] = 'r';
@@ -203,6 +202,7 @@ static void file_perms_to_str(PBFS_Permission_Flags perms, char* out, size_t siz
         out[off++] = 'l';
     if (perms & PERM_PROTECTED)
         out[off++] = 'p';
+    out[off++] = '\0';
     return;
 }
 static void pbfs_free_file_blocks(FILE* fp, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint128_t metadata_lba) {
@@ -357,7 +357,11 @@ int pbfs_format(const char* image, uint8_t kernel_table, uint8_t bootpartition, 
     bitmap_bit_set((uint8_t*)&bitmap->bytes, bitmap_lba);
     bitmap_bit_set((uint8_t*)&bitmap->bytes, dmm_lba);
     bitmap_bit_set((uint8_t*)&bitmap->bytes, sysinfo_lba);
-    if (bootpartition) bitmap_bit_set((uint8_t*)&bitmap->bytes, boot_part_lba);
+    if (bootpartition) {
+        for (uint8_t i = 0; i < bootpart_size; i++) {
+            bitmap_bit_set((uint8_t*)&bitmap->bytes, i + boot_part_lba);
+        }
+    }
     if (kernel_table) bitmap_bit_set((uint8_t*)&bitmap->bytes, kernel_table_lba);
     fseek(fp, LBA(bitmap_lba, block_size), SEEK_SET);
     fwrite(disk, block_size, 1, fp);
@@ -408,21 +412,10 @@ int pbfs_create(const char* image, uint32_t block_size, uint128_t total_blocks) 
 }
 
 // Adds a DMM entry to the disk
-int pbfs_add_dmm_entry(FILE* image, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint128_t lba, char* name, PBFS_Metadata_Flags type, PBFS_Permission_Flags perms, uint64_t created_ts, uint64_t modified_ts) {
-    if (hdr->dmm_root_lba <= 1) {
-        fprintf(stderr, "Invalid DMM LBA in Header!\n");
-        return InvalidHeader;
-    }
-
-    PBFS_DMM dmm = {0};
-    fseek(image, LBA(hdr->dmm_root_lba, hdr->block_size), SEEK_SET);
-    if (fread(&dmm, sizeof(PBFS_DMM), 1, image) != 1) {
-        perror("Failed to read DMM root");
-        return FileError;
-    }
-
+int pbfs_add_dmm_entry(FILE* image, PBFS_Header* hdr, uint128_t dmm_lba, PBFS_DMM* cur_dmm, PBFS_Bitmap* bitmap, uint128_t lba, char* name, PBFS_Metadata_Flags type, PBFS_Permission_Flags perms, uint64_t created_ts, uint64_t modified_ts) {
+    PBFS_DMM dmm = *cur_dmm;
     PBFS_DMM* current = &dmm;
-    uint128_t cur_lba = uint128_from_u64(hdr->dmm_root_lba);
+    uint128_t cur_lba = dmm_lba;
 
     for (int depth = 0; depth < PBFS_MAX_DMM_CHAIN; depth++) {
         // If there is space in current DMM, add the entry
@@ -466,7 +459,7 @@ int pbfs_add_dmm_entry(FILE* image, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint1
         strncpy(entry->name, name, sizeof(entry->name) - 1);
         entry->name[sizeof(entry->name) - 1] = '\0';
 
-        uint128_t new_ext_lba = bitmap_find_blocks(bitmap, uint128_from_u32(1), image, hdr->block_size);
+        uint128_t new_ext_lba = bitmap_find_blocks(bitmap, hdr->data_start_lba, uint128_from_u32(1), image, hdr->block_size);
         if (uint128_is_zero(&new_ext_lba)) {
             fprintf(stderr, "Out of space for DMM extender!\n");
             return NoSpaceAvailable;
@@ -490,8 +483,66 @@ int pbfs_add_dmm_entry(FILE* image, PBFS_Header* hdr, PBFS_Bitmap* bitmap, uint1
     return NoSpaceAvailable;
 }
 
+// Finds a dmm entry
+int pbfs_find_entry(const char* path, PBFS_DMM_Entry* out, uint128_t* out_lba, FILE* fp, PBFS_Header* hdr) {
+    char normalized[PBFS_MAX_PATH_LEN];
+    path_normalize((char*)path, normalized, PBFS_MAX_PATH_LEN);
+
+    // Root
+    if (strcmp(normalized, "/") == 0) {
+        return -1; // Root dmm
+    }
+
+    uint128_t current_dmm_lba = uint128_from_u64(hdr->dmm_root_lba);
+    char part[PBFS_MAX_NAME_LEN];
+    int depth = 0;
+    int found = 0;
+
+    while (depth < PBFS_MAX_DMM_CHAIN) {
+        path_part(normalized, depth++, part, PBFS_MAX_NAME_LEN);
+        if (strlen(part) == 0) break;
+
+        found = 0;
+        uint128_t iter_lba = current_dmm_lba;
+        while (UINT128_GT(iter_lba, UINT128_ZERO)) {
+            PBFS_Metadata md = {0};
+            if (depth > 1) {
+                fseek(fp, LBA(uint128_to_u64(iter_lba), hdr->block_size), SEEK_SET);
+                fread(&md, sizeof(PBFS_Metadata), 1, fp);
+                if (md.data_offset < 1) break;
+            }
+            PBFS_DMM dmm;
+            if (depth > 1) fseek(fp, LBA(uint128_to_u64(iter_lba) + md.data_offset, hdr->block_size), SEEK_SET);
+            else fseek(fp, LBA(uint128_to_u64(iter_lba), hdr->block_size), SEEK_SET);
+            fread(&dmm, sizeof(PBFS_DMM), 1, fp);
+
+            for (uint32_t i = 0; i < dmm.entry_count; i++) {
+                if (strcmp(dmm.entries[i].name, part) == 0) {
+                    *out = dmm.entries[i];
+                    *out_lba = iter_lba;
+                    found = 1;
+                    break;
+                }
+            }
+            if (found) break;
+            iter_lba = dmm.extender_lba;
+        }
+
+        if (!found) return FileNotFound;
+
+        // If we have more parts to go, this must be a directory
+        char next_part[PBFS_MAX_NAME_LEN];
+        path_part(normalized, depth, next_part, PBFS_MAX_NAME_LEN);
+        if (strlen(next_part) > 0) {
+            if (!(out->type & METADATA_FLAG_DIR)) return InvalidPath;
+            current_dmm_lba = out->lba;
+        }
+    }
+    return EXIT_SUCCESS;
+}
+
 // Adds a file to the disk EXTENDED
-int pbfs_add_ex(FILE* image, uint8_t* data, size_t data_size, PBFS_Header* hdr, char* name, uint32_t uid, uint32_t gid, PBFS_Metadata_Flags type, PBFS_Permission_Flags perms) {
+int pbfs_add_ex(FILE* image, uint8_t* data, size_t data_size, PBFS_Header* hdr, char* path, uint32_t uid, uint32_t gid, PBFS_Metadata_Flags type, PBFS_Permission_Flags perms) {
     // DATA should be PADDED to BLOCK SIZE!
     if (hdr->bitmap_lba <= 1) {
         fprintf(stderr, "Invalid Header!\n");
@@ -510,7 +561,7 @@ int pbfs_add_ex(FILE* image, uint8_t* data, size_t data_size, PBFS_Header* hdr, 
     PBFS_Bitmap bitmap = {0};
     fseek(image, LBA(hdr->bitmap_lba, hdr->block_size), SEEK_SET);
     fread(&bitmap, sizeof(PBFS_Bitmap), 1, image);
-    uint128_t lba = bitmap_find_blocks(&bitmap, uint128_from_u64(data_blocks + 1), image, hdr->block_size);
+    uint128_t lba = bitmap_find_blocks(&bitmap, hdr->data_start_lba, uint128_from_u64(data_blocks + 1), image, hdr->block_size);
     if (uint128_is_zero(&lba) == 1) {
         fprintf(stderr, "No Space left!\n");
         free(disk);
@@ -528,24 +579,252 @@ int pbfs_add_ex(FILE* image, uint8_t* data, size_t data_size, PBFS_Header* hdr, 
     metadata->created_timestamp = (uint64_t)now;
     metadata->modified_timestamp = (uint64_t)now;
     metadata->data_size = uint128_from_u64(data_size);
-    metadata->data_offset = 2;
+    metadata->data_offset = 1;
     metadata->flags = (uint32_t)type;
     metadata->ex_flags = (uint32_t)perms;
     metadata->extender_lba = UINT128_ZERO;
 
     fseek(image, LBA(uint128_to_u64(lba), hdr->block_size), SEEK_SET);
     fwrite(disk, hdr->block_size, 1, image);
+    fseek(image, LBA(uint128_to_u64(lba) + 1, hdr->block_size), SEEK_SET);
     fwrite(data, 1, data_size, image);
-    fseek(image, LBA(hdr->bitmap_lba, hdr->block_size), SEEK_SET);
     uint128_t current = lba;
     for (uint64_t i = 0; i < data_blocks + 1; i++) {
         bitmap_set(&bitmap, current, uint128_from_u64(hdr->bitmap_lba), UINT128_ZERO, image, hdr->block_size, 1);
         uint128_inc(&current);
     }
 
-    pbfs_add_dmm_entry(image, hdr, &bitmap, lba, name, type, perms, (uint64_t)now, (uint64_t)now);
-
     free(disk);
+
+    char dir[PBFS_MAX_PATH_LEN];
+    char name[PBFS_MAX_NAME_LEN];
+    path_basename(path, name, sizeof(name));
+    path_dirname(path, dir, sizeof(dir));
+    PBFS_DMM_Entry dir_entry = {0};
+    uint128_t dir_lba = UINT128_ZERO;
+    PBFS_DMM dir_dmm = {0};
+    int out = pbfs_find_entry(dir, &dir_entry, &dir_lba, image, hdr);
+    if (out != -1 && out != EXIT_SUCCESS) {
+        fprintf(stderr, "No such directory: %s\n", dir);
+        return out;
+    } else if (out == -1) {
+        if (hdr->dmm_root_lba <= 1) {
+            fprintf(stderr, "Invalid Header!\n");
+            return InvalidHeader;
+        }
+        dir_lba = uint128_from_u64(hdr->dmm_root_lba);
+        fseek(image, LBA(hdr->dmm_root_lba, hdr->block_size), SEEK_SET);
+        fread(&dir_dmm, sizeof(PBFS_DMM), 1, image);
+    } else {
+        if (!(dir_entry.type & METADATA_FLAG_DIR)) {
+            fprintf(stderr, "Not a directory: %s\n", dir);
+            return FileNotFound;
+        }
+
+        PBFS_Metadata parent_md = {0};
+        fseek(image, LBA(uint128_to_u64(dir_entry.lba), hdr->block_size), SEEK_SET);
+        fread(&parent_md, sizeof(PBFS_Metadata), 1, image);
+        if (parent_md.data_offset < 1) {
+            fprintf(stderr, "Invalid directory: %s\n", dir);
+            return InvalidPath;
+        }
+        if (!(parent_md.ex_flags & PERM_WRITE)) {
+            char parent_perms[10];
+            file_perms_to_str(parent_md.ex_flags, parent_perms, sizeof(parent_perms));
+            fprintf(stderr, "Permissions Denied for directory: %s [%s]\n", dir, parent_perms);
+            return PermissionDenied;
+        }
+        dir_lba = uint128_from_u64(uint128_to_u64(dir_entry.lba) + parent_md.data_offset);
+        fseek(image, LBA(uint128_to_u64(dir_entry.lba) + parent_md.data_offset, hdr->block_size), SEEK_SET);
+        fread(&dir_dmm, sizeof(PBFS_DMM), 1, image);
+    }
+    
+    pbfs_add_dmm_entry(image, hdr, dir_lba, &dir_dmm, &bitmap, lba, name, type, perms, (uint64_t)now, (uint64_t)now);
+    return EXIT_SUCCESS;
+}
+
+// Removes a file from the disk
+int pbfs_remove(const char* image_path, const char* path) {
+    FILE* fp = fopen(image_path, "rb+");
+    if (!fp) { perror("Remove failed"); return FileError; }
+
+    PBFS_Header hdr;
+    PBFS_Bitmap bitmap;
+    fseek(fp, 512, SEEK_SET);
+    fread(&hdr, sizeof(PBFS_Header), 1, fp);
+    if (hdr.bitmap_lba <= 1) {
+        fprintf(stderr, "Invalid Header!\n");
+        return InvalidHeader;
+    }
+    fseek(fp, LBA(hdr.bitmap_lba, hdr.block_size), SEEK_SET);
+    fread(&bitmap, sizeof(PBFS_Bitmap), 1, fp);
+
+    char dir_part[PBFS_MAX_PATH_LEN], base_part[PBFS_MAX_NAME_LEN];
+    path_dirname((char*)path, dir_part, PBFS_MAX_PATH_LEN);
+    path_basename((char*)path, base_part, PBFS_MAX_NAME_LEN);
+
+    PBFS_DMM_Entry dir_entry = {0};
+    PBFS_DMM dir_dmm = {0};
+    uint128_t dir_lba = UINT128_ZERO;
+    int out = pbfs_find_entry(dir_part, &dir_entry, &dir_lba, fp, &hdr);
+    if (out != -1 && out != EXIT_SUCCESS) {
+        fprintf(stderr, "No such directory: %s\n", dir_part);
+        fclose(fp);
+        return out;
+    } else if (out == -1) {
+        if (hdr.dmm_root_lba <= 1) {
+            fprintf(stderr, "Invalid Header!\n");
+            fclose(fp);
+            return InvalidHeader;
+        }
+        dir_lba = uint128_from_u64(hdr.dmm_root_lba);
+        fseek(fp, LBA(hdr.dmm_root_lba, hdr.block_size), SEEK_SET);
+        fread(&dir_dmm, sizeof(PBFS_DMM), 1, fp);
+    } else {
+        if (!(dir_entry.type & METADATA_FLAG_DIR)) {
+            fprintf(stderr, "Not a directory: %s\n", dir_part);
+            fclose(fp);
+            return FileNotFound;
+        }
+
+        PBFS_Metadata parent_md = {0};
+        fseek(fp, LBA(uint128_to_u64(dir_entry.lba), hdr.block_size), SEEK_SET);
+        fread(&parent_md, sizeof(PBFS_Metadata), 1, fp);
+        if (parent_md.data_offset < 1) {
+            fprintf(stderr, "Invalid directory: %s\n", dir_part);
+            fclose(fp);
+            return InvalidPath;
+        }
+        if (!(parent_md.ex_flags & PERM_WRITE)) {
+            char parent_perms[10];
+            file_perms_to_str(parent_md.ex_flags, parent_perms, sizeof(parent_perms));
+            fprintf(stderr, "Permissions Denied for directory: %s [%s]\n", dir_part, parent_perms);
+            fclose(fp);
+            return PermissionDenied;
+        }
+        dir_lba = uint128_from_u64(uint128_to_u64(dir_entry.lba) + parent_md.data_offset);
+        fseek(fp, LBA(uint128_to_u64(dir_entry.lba) + parent_md.data_offset, hdr.block_size), SEEK_SET);
+        fread(&dir_dmm, sizeof(PBFS_DMM), 1, fp);
+    }
+
+    uint128_t dmm_lba = dir_lba;
+    while (UINT128_GT(dmm_lba, UINT128_ZERO)) {
+        PBFS_DMM dmm;
+        uint64_t dmm_pos = LBA(uint128_to_u64(dmm_lba), hdr.block_size);
+        fseek(fp, dmm_pos, SEEK_SET);
+        fread(&dmm, sizeof(PBFS_DMM), 1, fp);
+
+        for (uint64_t i = 0; i < dmm.entry_count; i++) {
+            if (strcmp(dmm.entries[i].name, base_part) == 0) {
+                PBFS_DMM_Entry* entry = &dmm.entries[i];
+                uint128_t cur_lba = entry->lba;
+                PBFS_Metadata md = {0};
+                uint128_t u128_1 = uint128_from_u32(1);
+                while (UINT128_GT(cur_lba, u128_1)) {
+                    fseek(fp, LBA(uint128_to_u64(cur_lba), hdr.block_size), SEEK_SET);
+                    fread(&md, sizeof(PBFS_Metadata), 1, fp);
+
+                    uint64_t data_size = uint128_to_u64(md.data_size);
+                    uint64_t blocks = data_size / hdr.block_size;
+                    bitmap_set(&bitmap, cur_lba, uint128_from_u64(hdr.bitmap_lba), UINT128_ZERO, fp, hdr.block_size, 0);
+                    for (uint64_t i = 0; i < blocks; i++) {
+                        uint128_inc(&cur_lba);
+                        bitmap_set(&bitmap, cur_lba, uint128_from_u64(hdr.bitmap_lba), UINT128_ZERO, fp, hdr.block_size, 0);
+                    }
+
+                    cur_lba = md.extender_lba;
+                }
+
+                for (uint32_t j = i; j < dmm.entry_count - 1; j++) dmm.entries[j] = dmm.entries[j+1];
+                if (entry->perms & PERM_LOCKED) {
+                    char perms_str[10];
+                    file_perms_to_str(entry->perms, perms_str, sizeof(perms_str));
+                    fprintf(stderr, "Permissions Denied for file: %s [%s]\n", path, perms_str);
+                    fclose(fp);
+                    return PermissionDenied;
+                }
+                dmm.entry_count--;
+
+                fseek(fp, dmm_pos, SEEK_SET);
+                fwrite(&dmm, sizeof(PBFS_DMM), 1, fp);
+                fclose(fp); return EXIT_SUCCESS;
+            }
+        }
+        dmm_lba = dmm.extender_lba;
+    }
+    fclose(fp);
+    fprintf(stderr, "File Not Found!\n");
+    return FileNotFound;
+}
+
+// Lists a dir from the disk
+int pbfs_list_dir(const char* image_path, const char* path) {
+    FILE* fp = fopen(image_path, "rb");
+    if (!fp) { perror("Failed to open image"); return FileError; }
+
+    PBFS_Header hdr;
+    fseek(fp, 512, SEEK_SET);
+    fread(&hdr, sizeof(PBFS_Header), 1, fp);
+
+    PBFS_DMM_Entry dir_entry = {0};
+    PBFS_DMM dir_dmm = {0};
+    uint128_t dir_lba = UINT128_ZERO;
+    int out = pbfs_find_entry(path, &dir_entry, &dir_lba, fp, &hdr);
+    if (out != -1 && out != EXIT_SUCCESS) {
+        fprintf(stderr, "No such directory: %s\n", path);
+        fclose(fp);
+        return out;
+    } else if (out == -1) {
+        if (hdr.dmm_root_lba <= 1) {
+            fprintf(stderr, "Invalid Header!\n");
+            fclose(fp);
+            return InvalidHeader;
+        }
+        dir_lba = uint128_from_u64(hdr.dmm_root_lba);
+        fseek(fp, LBA(hdr.dmm_root_lba, hdr.block_size), SEEK_SET);
+        fread(&dir_dmm, sizeof(PBFS_DMM), 1, fp);
+    } else {
+        if (!(dir_entry.type & METADATA_FLAG_DIR)) {
+            fprintf(stderr, "Not a directory: %s\n", path);
+            fclose(fp);
+            return FileNotFound;
+        }
+
+        PBFS_Metadata parent_md = {0};
+        fseek(fp, LBA(uint128_to_u64(dir_entry.lba), hdr.block_size), SEEK_SET);
+        fread(&parent_md, sizeof(PBFS_Metadata), 1, fp);
+        if (parent_md.data_offset < 1) {
+            fprintf(stderr, "Invalid directory: %s\n", path);
+            fclose(fp);
+            return InvalidPath;
+        }
+        if (!(parent_md.ex_flags & PERM_READ)) {
+            char parent_perms[10];
+            file_perms_to_str(parent_md.ex_flags, parent_perms, sizeof(parent_perms));
+            fprintf(stderr, "Permissions Denied for directory: %s [%s]\n", path, parent_perms);
+            fclose(fp);
+            return PermissionDenied;
+        }
+        dir_lba = uint128_from_u64(uint128_to_u64(dir_entry.lba) + parent_md.data_offset);
+        fseek(fp, LBA(uint128_to_u64(dir_entry.lba) + parent_md.data_offset, hdr.block_size), SEEK_SET);
+        fread(&dir_dmm, sizeof(PBFS_DMM), 1, fp);
+    }
+
+    uint128_t dmm_lba = dir_lba;
+    printf("Listing: %s\n", path);
+    while (UINT128_GT(dmm_lba, UINT128_ZERO)) {
+        PBFS_DMM dmm;
+        fseek(fp, LBA(uint128_to_u64(dmm_lba), hdr.block_size), SEEK_SET);
+        fread(&dmm, sizeof(PBFS_DMM), 1, fp);
+
+        for (uint32_t i = 0; i < dmm.entry_count; i++) {
+            char perms[10];
+            file_perms_to_str(dmm.entries[i].perms, perms, sizeof(perms));
+            printf("\t%.64s [%s] (%s / at lba %lld)\n", dmm.entries[i].name, file_type_to_str(dmm.entries[i].type), perms, uint128_to_u64(dmm.entries[i].lba));
+        }
+        dmm_lba = dmm.extender_lba;
+    }
+    fclose(fp);
     return EXIT_SUCCESS;
 }
 
@@ -586,10 +865,14 @@ int pbfs_test(const char* image, uint8_t debug) {
         "=== Header Information ===\n"
         "Magic: %.6s\n"
         "Block Size: %d\nTotal Blocks: %lld\n"
-        "Disk Name: %s\nVolume ID: %lld\n",
+        "Disk Name: %s\nVolume ID: %lld\n"
+        "DMM Root LBA: %lld\nBitmap Root LBA: %lld\n"
+        "Kernel Table Root LBA: %lld\nBoot Partition LBA: %lld\n"
+        "Data LBA: %lld\n",
         hdr->magic,
         (unsigned int)hdr->block_size, (unsigned long long int)uint128_to_u64(hdr->total_blocks),
-        (char*)hdr->disk_name, (unsigned long long int)uint128_to_u64(hdr->volume_id)
+        (char*)hdr->disk_name, (unsigned long long int)uint128_to_u64(hdr->volume_id),
+        hdr->dmm_root_lba, hdr->bitmap_lba, hdr->kernel_table_lba, hdr->boot_partition_lba, hdr->data_start_lba
     );
 
     if (hdr->bitmap_lba <= 1) {
@@ -656,50 +939,19 @@ int pbfs_test(const char* image, uint8_t debug) {
                 kto = uint128_to_u64(kernel_table->extender_lba);
             }
         }
-        PBFS_DMM dmm = {0};
-        uint128_t cur_lba = uint128_from_u64(hdr->dmm_root_lba);
 
-        printf("\n=== Files/Dirs/... ===\n");
-        for (int depth = 0; depth < PBFS_MAX_DMM_CHAIN; depth++) {
-            fseek(f, LBA(uint128_to_u64(cur_lba), hdr->block_size), SEEK_SET);
-            if (fread(&dmm, sizeof(PBFS_DMM), 1, f) != 1) {
-                fprintf(stderr, "Failed to read DMM block at LBA %llu\n", (unsigned long long int)uint128_to_u64(cur_lba));
-                break;
-            }
-
-            for (uint32_t i = 0; i < dmm.entry_count; i++) {
-                PBFS_DMM_Entry* entry = &dmm.entries[i];
-                struct tm* created = localtime(&entry->created_timestamp);
-                struct tm* modified = localtime(&entry->modified_timestamp);
-                char perms_str[10] = {0};
-                file_perms_to_str((PBFS_Permission_Flags)entry->perms, perms_str, 10);
-                printf("(%d) %.64s (%s) at %lld (%.10s)\n", 
-                    i + (depth * PBFS_DMM_ENTRIES),
-                    entry->name,
-                    file_type_to_str((PBFS_Metadata_Flags)entry->type),
-                    (unsigned long long int)uint128_to_u64(entry->lba),
-                    perms_str
-                );
-                printf(
-                    "\tCreated: %04d-%02d-%02d\n",
-                    created->tm_year + 1900,
-                    created->tm_mon + 1,
-                    created->tm_mday
-                );
-                printf(
-                    "\tModified: %04d-%02d-%02d\n",
-                    modified->tm_year + 1900,
-                    modified->tm_mon + 1,
-                    modified->tm_mday
-                );
-            }
-
-            // Follow extender if exists
-            if (UINT128_EQ(dmm.extender_lba, UINT128_ZERO))
-                break;
-
-            cur_lba = dmm.extender_lba;
-        }
+        fclose(f);
+        pbfs_list_dir(image, "/");
+        // FILE* f = fopen(image, "rb");
+        // if (!f) {
+        //     perror("Failed to reopen image!\n");
+        //     free(hdr);
+        //     free(disk);
+        //     return FileError;
+        // }
+        free(hdr);
+        free(disk);
+        return EXIT_SUCCESS;
     }
 
     if (debug) printf("Success!\n");
@@ -781,332 +1033,242 @@ int pbfs_add(const char* image, const char* file, char* name, char* perms, char*
     return EXIT_SUCCESS;
 }
 
-// Removes a file from the disk
-int pbfs_remove(const char* image_path, const char* name) {
-    FILE* fp = fopen(image_path, "rb+");
-    if (!fp) return FileError;
-
-    PBFS_Header hdr;
-    fseek(fp, 512, SEEK_SET);
-    fread(&hdr, sizeof(PBFS_Header), 1, fp);
-
-    PBFS_Bitmap bitmap;
-    fseek(fp, LBA(hdr.bitmap_lba, hdr.block_size), SEEK_SET);
-    fread(&bitmap, sizeof(PBFS_Bitmap), 1, fp);
-
-    PBFS_DMM dmm;
-    uint128_t cur_dmm_lba = uint128_from_u64(hdr.dmm_root_lba);
-    
-    while (UINT128_GT(cur_dmm_lba, UINT128_ZERO)) {
-        fseek(fp, LBA(uint128_to_u64(cur_dmm_lba), hdr.block_size), SEEK_SET);
-        fread(&dmm, sizeof(PBFS_DMM), 1, fp);
-
-        for (uint32_t i = 0; i < dmm.entry_count; i++) {
-            if (strcmp(dmm.entries[i].name, name) == 0) {               
-                // Check for protection flag
-                if (dmm.entries[i].perms & PERM_LOCKED) {
-                    fprintf(stderr, "Error: File is locked and cannot be deleted.\n");
-                    fclose(fp);
-                    return PermissionDenied;
-                }
-
-                // Execute Deletion
-                if (dmm.entries[i].type & METADATA_FLAG_DIR) {
-                    pbfs_delete_recursive(fp, &hdr, &bitmap, dmm.entries[i].lba);
-                } else {
-                    pbfs_free_file_blocks(fp, &hdr, &bitmap, dmm.entries[i].lba);
-                }
-
-                // Remove entry from current DMM block by shifting
-                for (uint32_t j = i; j < dmm.entry_count - 1; j++) {
-                    dmm.entries[j] = dmm.entries[j+1];
-                }
-                dmm.entry_count--;
-
-                // Update the DMM block on disk
-                fseek(fp, LBA(uint128_to_u64(cur_dmm_lba), hdr.block_size), SEEK_SET);
-                fwrite(&dmm, sizeof(PBFS_DMM), 1, fp);
-                
-                fclose(fp);
-                return EXIT_SUCCESS;
-            }
-        }
-        cur_dmm_lba = dmm.extender_lba;
-    }
-
-    fclose(fp);
-    return FileNotFound;
-}
-
-// Lists a dir from the disk
-int pbfs_list_dir(const char* image_path, const char* dir_path) {
-    FILE* fp = fopen(image_path, "rb");
-    if (!fp) {
-        perror("List failed: Could not open image");
-        return FileError;
-    }
-
-    PBFS_Header hdr;
-    fseek(fp, 512, SEEK_SET);
-    if (fread(&hdr, sizeof(PBFS_Header), 1, fp) != 1) {
-        fprintf(stderr, "Error: Failed to read header\n");
-        fclose(fp); return InvalidHeader;
-    }
-
-    PBFS_DMM dmm;
-    uint128_t cur_dmm_lba = uint128_from_u64(hdr.dmm_root_lba);
-    int found = 0;
-
-    // Search the entire DMM chain for the path name
-    while (UINT128_GT(cur_dmm_lba, UINT128_ZERO)) {
-        fseek(fp, LBA(uint128_to_u64(cur_dmm_lba), hdr.block_size), SEEK_SET);
-        if (fread(&dmm, sizeof(PBFS_DMM), 1, fp) != 1) break;
-
-        for (uint32_t i = 0; i < dmm.entry_count; i++) {
-            if (strcmp(dmm.entries[i].name, dir_path) == 0) {
-                found = 1;
-                const char* type_name = file_type_to_str(dmm.entries[i].type);
-
-                if (dmm.entries[i].type & METADATA_FLAG_DIR) {
-                    printf("Contents of Directory [%s]:\n", dir_path);
-                    // TODO: Make a Directory DMM
-                    PBFS_DMM sub_dmm;
-                    fseek(fp, LBA(uint128_to_u64(dmm.entries[i].lba), hdr.block_size), SEEK_SET);
-                    if (fread(&sub_dmm, sizeof(PBFS_DMM), 1, fp) == 1) {
-                        for (uint32_t j = 0; j < sub_dmm.entry_count; j++) {
-                            printf(
-                                "  %-16s  %s\n", sub_dmm.entries[j].name, 
-                                file_type_to_str(sub_dmm.entries[j].type)
-                            );
-                        }
-                    }
-                } else {
-                    // It's a file, just show the entry info
-                    printf(
-                        "%-16s  %s  LBA: %llu\n", dmm.entries[i].name, type_name, 
-                        (unsigned long long)uint128_to_u64(dmm.entries[i].lba)
-                    );
-                }
-                break;
-            }
-        }
-        if (found) break;
-        cur_dmm_lba = dmm.extender_lba;
-    }
-
-    if (!found) fprintf(stderr, "Error: Path '%s' not found in DMM.\n", dir_path);
-    fclose(fp);
-    return found ? EXIT_SUCCESS : FileNotFound;
-}
-
 // Updates a file on the disk
-int pbfs_update_file(const char* image_path, const char* name, uint8_t* new_data, size_t new_size) {
+int pbfs_update_file(const char* image_path, const char* path, uint8_t* data, size_t size) {
     FILE* fp = fopen(image_path, "rb+");
-    if (!fp) { perror("Update failed"); return FileError; }
-
     PBFS_Header hdr;
     fseek(fp, 512, SEEK_SET);
     fread(&hdr, sizeof(PBFS_Header), 1, fp);
 
-    PBFS_Bitmap bitmap;
-    fseek(fp, LBA(hdr.bitmap_lba, hdr.block_size), SEEK_SET);
-    fread(&bitmap, sizeof(PBFS_Bitmap), 1, fp);
-
-    PBFS_DMM dmm;
-    uint128_t cur_dmm_lba = uint128_from_u64(hdr.dmm_root_lba);
-    
-    while (UINT128_GT(cur_dmm_lba, UINT128_ZERO)) {
-        fseek(fp, LBA(uint128_to_u64(cur_dmm_lba), hdr.block_size), SEEK_SET);
-        fread(&dmm, sizeof(PBFS_DMM), 1, fp);
-
-        for (uint32_t i = 0; i < dmm.entry_count; i++) {
-            if (strcmp(dmm.entries[i].name, name) == 0) {
-                PBFS_Metadata meta;
-                uint64_t meta_lba = uint128_to_u64(dmm.entries[i].lba);
-                fseek(fp, LBA(meta_lba, hdr.block_size), SEEK_SET);
-                fread(&meta, sizeof(PBFS_Metadata), 1, fp);
-
-                uint64_t old_size = uint128_to_u64(meta.data_size);
-                uint64_t old_blocks = (old_size + hdr.block_size - 1) / hdr.block_size;
-                uint64_t new_blocks = (new_size + hdr.block_size - 1) / hdr.block_size;
-
-                size_t first_chunk = (new_size < old_size) ? new_size : old_size;
-                fseek(fp, LBA(meta_lba, hdr.block_size) + sizeof(PBFS_Metadata), SEEK_SET);
-                fwrite(new_data, 1, first_chunk, fp);
-
-                if (new_size > old_size) {
-                    uint128_t ext_lba = bitmap_find_blocks(&bitmap, uint128_from_u32(1), fp, hdr.block_size);
-                    if (uint128_is_zero(&ext_lba)) {
-                        fprintf(stderr, "Insufficient space for file extension!\n");
-                        fclose(fp); return NoSpaceAvailable;
-                    }
-
-                    // Write overflow data to the extension block
-                    fseek(fp, LBA(uint128_to_u64(ext_lba), hdr.block_size), SEEK_SET);
-                    fwrite(new_data + first_chunk, 1, new_size - first_chunk, fp);
-                    
-                    // Update original metadata to point to extension
-                    uint128_t ext = UINT128_ZERO;
-                    uint128_sub(&ext, &ext_lba, &dmm.entries[i].lba);
-                    meta.extender_lba = ext;
-                    bitmap_set(&bitmap, ext_lba, uint128_from_u64(hdr.bitmap_lba), UINT128_ZERO, fp, hdr.block_size, 1);
-                }
-
-                meta.data_size = uint128_from_u64(new_size);
-                meta.modified_timestamp = (uint64_t)time(NULL);
-                fseek(fp, LBA(meta_lba, hdr.block_size), SEEK_SET);
-                fwrite(&meta, sizeof(PBFS_Metadata), 1, fp);
-
-                fclose(fp);
-                return EXIT_SUCCESS;
-            }
+    PBFS_DMM_Entry file_entry = {0};
+    PBFS_DMM file_dmm = {0};
+    uint128_t file_lba = UINT128_ZERO;
+    int out = pbfs_find_entry(path, &file_entry, &file_lba, fp, &hdr);
+    if (out != -1 && out != EXIT_SUCCESS) {
+        fprintf(stderr, "No such file: %s\n", path);
+        fclose(fp);
+        return out;
+    } else if (out == -1) {
+        if (hdr.dmm_root_lba <= 1) {
+            fprintf(stderr, "Invalid Header!\n");
+            fclose(fp);
+            return InvalidHeader;
         }
-        cur_dmm_lba = dmm.extender_lba;
+        file_lba = uint128_from_u64(hdr.dmm_root_lba);
+        fseek(fp, LBA(hdr.dmm_root_lba, hdr.block_size), SEEK_SET);
+        fread(&file_dmm, sizeof(PBFS_DMM), 1, fp);
+    } else {
+        if (!(file_entry.type & METADATA_FLAG_FILE)) {
+            fprintf(stderr, "Not a file: %s\n", path);
+            fclose(fp);
+            return FileNotFound;
+        }
+
+        PBFS_Metadata parent_md = {0};
+        fseek(fp, LBA(uint128_to_u64(file_entry.lba), hdr.block_size), SEEK_SET);
+        fread(&parent_md, sizeof(PBFS_Metadata), 1, fp);
+        if (parent_md.data_offset < 1) {
+            fprintf(stderr, "Invalid file: %s\n", path);
+            fclose(fp);
+            return InvalidPath;
+        }
+        if (!(parent_md.ex_flags & PERM_WRITE)) {
+            char parent_perms[10];
+            file_perms_to_str(parent_md.ex_flags, parent_perms, sizeof(parent_perms));
+            fprintf(stderr, "Permissions Denied for file: %s [%s]\n", path, parent_perms);
+            fclose(fp);
+            return PermissionDenied;
+        }
+        file_lba = uint128_from_u64(uint128_to_u64(file_entry.lba) + parent_md.data_offset);
+        fseek(fp, LBA(uint128_to_u64(file_entry.lba) + parent_md.data_offset, hdr.block_size), SEEK_SET);
+        fread(&file_dmm, sizeof(PBFS_DMM), 1, fp);
     }
+
+    size_t written = 0;
+    uint128_t current_lba = file_lba;
+
+    while (written < size && UINT128_GT(current_lba, UINT128_ZERO)) {
+        PBFS_Metadata meta;
+        uint64_t pos = LBA(uint128_to_u64(current_lba), hdr.block_size);
+        fseek(fp, pos, SEEK_SET);
+        fread(&meta, sizeof(PBFS_Metadata), 1, fp);
+
+        size_t cap = hdr.block_size - sizeof(PBFS_Metadata);
+        size_t chunk = (size - written < cap) ? size - written : cap;
+
+        fseek(fp, pos + sizeof(PBFS_Metadata), SEEK_SET);
+        fwrite(data + written, 1, chunk, fp);
+        written += chunk;
+
+        // Update meta size on the very first block
+        if (written <= cap) {
+            meta.data_size = uint128_from_u64(size);
+            fseek(fp, pos, SEEK_SET);
+            fwrite(&meta, sizeof(PBFS_Metadata), 1, fp);
+        }
+        current_lba = meta.extender_lba;
+    }
+
     fclose(fp);
-    return FileNotFound;
+    return EXIT_SUCCESS;
 }
 
 // Adds a dir
-int pbfs_add_dir(const char* image, char* name, char* perms, uint32_t gid, uint32_t uid) {
-    FILE* f = fopen(image, "rb+");
-    if (!f) {
-        perror("Failed to open image for directory creation");
+int pbfs_add_dir(const char* image_path, const char* path, char* perms, uint32_t gid, uint32_t uid) {
+    FILE* fp = fopen(image_path, "rb+");
+    if (!fp) {
+        perror("Failed to open image!\n");
         return FileError;
     }
 
     PBFS_Header hdr;
-    fseek(f, 512, SEEK_SET);
-    if (fread(&hdr, sizeof(PBFS_Header), 1, f) != 1) {
-        fprintf(stderr, "Error: Failed to read image header\n");
-        fclose(f); return InvalidHeader;
-    }
-
-    PBFS_Permission_Flags perm_flags = parse_file_perms(perms);
-    if (perm_flags == PERM_INVALID) {
-        fprintf(stderr, "Error: Invalid permission flags '%s'\n", perms);
-        fclose(f); return InvalidArgument;
-    }
-
     PBFS_Bitmap bitmap;
-    fseek(f, LBA(hdr.bitmap_lba, hdr.block_size), SEEK_SET);
-    fread(&bitmap, sizeof(PBFS_Bitmap), 1, f);
+    fseek(fp, 512, SEEK_SET);
+    fread(&hdr, sizeof(PBFS_Header), 1, fp);
+    if (hdr.bitmap_lba <= 1) {
+        fprintf(stderr, "Invalid Header!\n");
+        return InvalidHeader;
+    }
+    fseek(fp, LBA(hdr.bitmap_lba, hdr.block_size), SEEK_SET);
+    fread(&bitmap, sizeof(PBFS_Bitmap), 1, fp);
 
-    // Find a block for the new directory's Metadata
-    uint128_t dir_lba = bitmap_find_blocks(&bitmap, uint128_from_u32(1), f, hdr.block_size);
-    if (uint128_is_zero(&dir_lba)) {
-        fprintf(stderr, "Error: No space available for new directory Metadata\n");
-        fclose(f); return NoSpaceAvailable;
+    char dname[PBFS_MAX_PATH_LEN], bname[PBFS_MAX_NAME_LEN];
+    path_dirname((char*)path, dname, PBFS_MAX_PATH_LEN);
+    path_basename((char*)path, bname, PBFS_MAX_NAME_LEN);
+
+    PBFS_DMM_Entry parent;
+    PBFS_DMM parent_dmm = {0};
+    uint128_t parent_lba;
+    int out = pbfs_find_entry(dname, &parent, &parent_lba, fp, &hdr);
+    if (out != -1 && out != EXIT_SUCCESS) {
+        fprintf(stderr, "No such directory: %s\n", dname);
+        fclose(fp);
+        return out;
+    } else if (out == -1) {
+        if (hdr.dmm_root_lba <= 1) {
+            fprintf(stderr, "Invalid Header!\n");
+            fclose(fp);
+            return InvalidHeader;
+        }
+        parent_lba = uint128_from_u64(hdr.dmm_root_lba);
+        fseek(fp, LBA(hdr.dmm_root_lba, hdr.block_size), SEEK_SET);
+        fread(&parent_dmm, sizeof(PBFS_DMM), 1, fp);
+    } else {
+        if (!(parent.type & METADATA_FLAG_DIR)) {
+            fprintf(stderr, "Not a directory: %s\n", dname);
+            fclose(fp);
+            return FileNotFound;
+        }
+
+        PBFS_Metadata parent_md = {0};
+        fseek(fp, LBA(uint128_to_u64(parent.lba), hdr.block_size), SEEK_SET);
+        fread(&parent_md, sizeof(PBFS_Metadata), 1, fp);
+        if (parent_md.data_offset < 1) {
+            fprintf(stderr, "Invalid directory: %s\n", dname);
+            fclose(fp);
+            return InvalidPath;
+        }
+        if (!(parent_md.ex_flags & PERM_WRITE)) {
+            char parent_perms[10];
+            file_perms_to_str(parent_md.ex_flags, parent_perms, sizeof(parent_perms));
+            fprintf(stderr, "Permissions Denied for directory: %s [%s]\n", dname, parent_perms);
+            fclose(fp);
+            return PermissionDenied;
+        }
+        parent_lba = uint128_from_u64(uint128_to_u64(parent.lba) + parent_md.data_offset);
+        fseek(fp, LBA(uint128_to_u64(parent.lba) + parent_md.data_offset, hdr.block_size), SEEK_SET);
+        fread(&parent_dmm, sizeof(PBFS_DMM), 1, fp);
     }
 
-    // Initialize the new empty Metadata block
-    PBFS_Metadata new_md = {0};
-    new_md.data_offset = 0;
-    new_md.data_size = UINT128_ZERO;
-    new_md.extender_lba = UINT128_ZERO;
-    new_md.ex_flags = perm_flags;
-    new_md.flags = METADATA_FLAG_DIR;
-    new_md.gid = gid;
-    new_md.uid = uid;
-    new_md.permission_offset = 0;
-    time_t now = {0};
-    time(&now);
-    new_md.created_timestamp = (uint64_t)now;
-    new_md.modified_timestamp = (uint64_t)now;
-    fseek(f, LBA(uint128_to_u64(dir_lba), hdr.block_size), SEEK_SET);
-    fwrite(&new_md, sizeof(PBFS_Metadata), 1, f);
+    uint64_t new_lba = uint128_to_u64(bitmap_find_blocks(&bitmap, hdr.data_start_lba, uint128_from_u32(2), fp, hdr.block_size));
+    PBFS_Metadata md = {0};
+    md.data_size = UINT128_ZERO; // Directory
+    md.data_offset = 1;
+    md.permission_offset = 0;
+    md.flags = METADATA_FLAG_DIR;
+    md.ex_flags = parse_file_perms(perms);
+    md.uid = uid;
+    md.gid = gid;
+    md.extender_lba = UINT128_ZERO;
+    uint64_t now = 0;
+    time((time_t*)&now);
+    md.created_timestamp = now;
+    md.modified_timestamp = now;
 
-    // Mark the block as used
-    bitmap_set(&bitmap, dir_lba, uint128_from_u64(hdr.bitmap_lba), UINT128_ZERO, f, hdr.block_size, 1);
+    fseek(fp, LBA(new_lba, hdr.block_size), SEEK_SET);
+    fwrite(&md, sizeof(PBFS_Metadata), 1, fp);
+    bitmap_set(&bitmap, uint128_from_u64(new_lba), uint128_from_u64(hdr.bitmap_lba), UINT128_ZERO, fp, hdr.block_size, 1);
+    PBFS_DMM new_dmm = {0};
+    fseek(fp, LBA(new_lba + 1, hdr.block_size), SEEK_SET);
+    fwrite(&new_dmm, sizeof(PBFS_DMM), 1, fp);
+    bitmap_set(&bitmap, uint128_from_u64(new_lba + 1), uint128_from_u64(hdr.bitmap_lba), UINT128_ZERO, fp, hdr.block_size, 1);
 
-    // Add entry to the root/parent DMM
-    int out = pbfs_add_dmm_entry(f, &hdr, &bitmap, dir_lba, name, METADATA_FLAG_DIR, perm_flags, (uint64_t)now, (uint64_t)now);
-    
-    fclose(f);
-    if (out != EXIT_SUCCESS) {
-        fprintf(stderr, "Error: Failed to add directory entry to DMM\n");
-    }
-    return out;
+    pbfs_add_dmm_entry(fp, &hdr, parent_lba, &parent_dmm, &bitmap, uint128_from_u64(new_lba), bname, METADATA_FLAG_DIR, md.ex_flags, now, now);
+
+    fclose(fp);
+    return EXIT_SUCCESS;
 }
 
 // Reads a file
-int pbfs_read_file(const char* image_path, const char* name, uint8_t** out_buffer, size_t* out_size) {
+int pbfs_read_file(const char* image_path, const char* path, uint8_t** out_buffer, size_t* out_size) {
     FILE* fp = fopen(image_path, "rb");
-    if (!fp) {
-    perror("Read failed: Could not open image");
-    return FileError;
-    }
+    if (!fp) { perror("Read error"); return FileError; }
 
     PBFS_Header hdr;
     fseek(fp, 512, SEEK_SET);
-    if (fread(&hdr, sizeof(PBFS_Header), 1, fp) != 1) {
-        fprintf(stderr, "Error: Failed to read header\n");
-        fclose(fp); return InvalidHeader;
-    }
+    fread(&hdr, sizeof(PBFS_Header), 1, fp);
 
-    // Locate the file
-    PBFS_DMM dmm;
-    uint128_t cur_dmm_lba = uint128_from_u64(hdr.dmm_root_lba);
+    PBFS_DMM_Entry file = {0};
+    PBFS_Metadata meta = {0};
     uint128_t file_lba = UINT128_ZERO;
-
-    while (UINT128_GT(cur_dmm_lba, UINT128_ZERO)) {
-        fseek(fp, LBA(uint128_to_u64(cur_dmm_lba), hdr.block_size), SEEK_SET);
-        if (fread(&dmm, sizeof(PBFS_DMM), 1, fp) != 1) break;
-
-        for (uint32_t i = 0; i < dmm.entry_count; i++) {
-            if (strcmp(dmm.entries[i].name, name) == 0) {
-                if (dmm.entries[i].type & METADATA_FLAG_DIR) {
-                    fprintf(stderr, "Error: '%s' is a directory.\n", name);
-                    fclose(fp); return InvalidArgument;
-                }
-                file_lba = dmm.entries[i].lba;
-                break;
-            }
+    int out = pbfs_find_entry(path, &file, &file_lba, fp, &hdr);
+    if (out != EXIT_SUCCESS) {
+        fprintf(stderr, "No such file: %s\n", path);
+        fclose(fp);
+        return out;
+    } else {
+        if (!(file.type & METADATA_FLAG_FILE)) {
+            fprintf(stderr, "Not a file: %s\n", path);
+            fclose(fp);
+            return FileNotFound;
         }
-        if (UINT128_GT(file_lba, UINT128_ZERO)) break;
-        cur_dmm_lba = dmm.extender_lba;
+
+        fseek(fp, LBA(uint128_to_u64(file.lba), hdr.block_size), SEEK_SET);
+        fread(&meta, sizeof(PBFS_Metadata), 1, fp);
+        if (meta.data_offset < 1) {
+            fprintf(stderr, "Invalid file: %s\n", path);
+            fclose(fp);
+            return InvalidPath;
+        }
+        if (!(meta.ex_flags & PERM_READ)) {
+            char parent_perms[10];
+            file_perms_to_str(meta.ex_flags, parent_perms, sizeof(parent_perms));
+            fprintf(stderr, "Permissions Denied for file: %s [%s]\n", path, parent_perms);
+            fclose(fp);
+            return PermissionDenied;
+        }
     }
-
-    if (uint128_is_zero(&file_lba)) {
-        fprintf(stderr, "Error: File '%s' not found.\n", name);
-        fclose(fp); return FileNotFound;
-    }
-
-    PBFS_Metadata meta;
-    fseek(fp, LBA(uint128_to_u64(file_lba), hdr.block_size), SEEK_SET);
-    fread(&meta, sizeof(PBFS_Metadata), 1, fp);
-
     size_t total_size = (size_t)uint128_to_u64(meta.data_size);
-    uint8_t* buffer = (uint8_t*)malloc(total_size);
-    if (!buffer) {
-        perror("Failed to allocate read buffer");
-        fclose(fp); return AllocFailed;
-    }
-
-    // Chain Reading
+    uint8_t* buffer = malloc(total_size);
     size_t bytes_read = 0;
-    uint128_t next_lba = file_lba;
+    uint128_t next_lba = file.lba;
 
     while (bytes_read < total_size && UINT128_GT(next_lba, UINT128_ZERO)) {
-        uint64_t current_raw_lba = uint128_to_u64(next_lba);
-        
-        fseek(fp, LBA(current_raw_lba, hdr.block_size), SEEK_SET);
-        if (fread(&meta, sizeof(PBFS_Metadata), 1, fp) != 1) break;
+        uint64_t raw_lba = uint128_to_u64(next_lba);
+        fseek(fp, LBA(raw_lba, hdr.block_size), SEEK_SET);
+        fread(&meta, sizeof(PBFS_Metadata), 1, fp);
 
-        size_t remaining = total_size - bytes_read;
-        size_t base_capacity = hdr.block_size - sizeof(PBFS_Metadata);
-        size_t chunk_size = (remaining < base_capacity) ? remaining : base_capacity;
+        size_t chunk = (total_size - bytes_read < hdr.block_size - sizeof(PBFS_Metadata)) ? total_size - bytes_read : hdr.block_size - sizeof(PBFS_Metadata);
         
-        fseek(fp, LBA(current_raw_lba, hdr.block_size) + sizeof(PBFS_Metadata), SEEK_SET);
-        fread(buffer + bytes_read, 1, chunk_size, fp);
+        fseek(fp, LBA(raw_lba + meta.data_offset, hdr.block_size), SEEK_SET);
+        fread(buffer + bytes_read, 1, chunk, fp);
         
-        bytes_read += chunk_size;
-        next_lba = meta.extender_lba; 
+        bytes_read += chunk;
+        next_lba = meta.extender_lba;
     }
 
     *out_buffer = buffer;
     *out_size = total_size;
-
     fclose(fp);
     return EXIT_SUCCESS;
 }
