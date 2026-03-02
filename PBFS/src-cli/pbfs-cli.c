@@ -1452,15 +1452,17 @@ int pbfs_read_file(const char* image_path, const char* path, uint8_t** out_buffe
 }
 
 // I know wierd name but it doesn't print, yes wierd name choice. No questions!
-int pbfs_list_dir_recursive(FILE* fp, PBFS_Header* hdr, const char* src_dir, char* temp_path, const char* dst_dir) {
+int pbfs_list_dir_recursive(FILE* fp, PBFS_Header* hdr, const char* src_dir, const char* dst_dir) {
     PBFS_DMM_Entry entry;
     PBFS_DMM_Entry child;
     uint128_t entry_lba, child_lba;
     PBFS_DMM dmm;
+
     uint64_t now = (uint64_t)time(NULL);
+    
     int out = pbfs_find_entry((char*)src_dir, &entry, &entry_lba, fp, hdr);
-    if (out != EXIT_SUCCESS) return out;
-    if (!(entry.type & METADATA_FLAG_DIR)) return InvalidPath;
+    if (out != EXIT_SUCCESS) { fprintf(stderr, "No such file or directory: %s\n", src_dir); return out; }
+    if (!(entry.type & METADATA_FLAG_DIR)) { fprintf(stderr, "Not a directory!\n"); return InvalidPath; }
 
     fseek(fp, LBA(uint128_to_u64(entry_lba), hdr->block_size), SEEK_SET);
     fread(&dmm, sizeof(PBFS_DMM), 1, fp);
@@ -1471,22 +1473,27 @@ int pbfs_list_dir_recursive(FILE* fp, PBFS_Header* hdr, const char* src_dir, cha
         fseek(fp, LBA(uint128_to_u64(e->lba), hdr->block_size), SEEK_SET);
         fread(&md, sizeof(PBFS_Metadata), 1, fp);
 
+        char new_dst[PBFS_MAX_PATH_LEN];
+        char new_src[PBFS_MAX_PATH_LEN];
+
+        snprintf(new_src, PBFS_MAX_PATH_LEN, "%s/%s", src_dir, e->name);
+        snprintf(new_dst, PBFS_MAX_PATH_LEN, "%s/%s", dst_dir, e->name);
+
         if (e->type & METADATA_FLAG_FILE) {
-            snprintf(temp_path, PBFS_MAX_PATH_LEN, "%s/%s", dst_dir, e->name);
             uint8_t* buffer = NULL;
             size_t size = 0;
-            out = pbfs_read_file_ex(e->name, &buffer, &size, fp, hdr, 1);
+            
+            out = pbfs_read_file_ex(new_src, &buffer, &size, fp, hdr, 1);
             if (out != EXIT_SUCCESS) return out;
-            out = pbfs_add_ex(fp, buffer, size, hdr, temp_path, 0, 0, e->type, e->perms);
+            
+            out = pbfs_add_ex(fp, buffer, size, hdr, new_dst, 0, 0, e->type, e->perms);
             if (buffer) free(buffer);
             if (out != EXIT_SUCCESS) return out;
         } else if (e->type & METADATA_FLAG_DIR) {
-            snprintf(temp_path, PBFS_MAX_PATH_LEN, "%s/%s", dst_dir, e->name);
-            out = pbfs_add_dir_ex(fp, temp_path, e->perms, md.gid, md.uid, e->lba, hdr, 0);
+            out = pbfs_add_dir_ex(fp, dst_dir, e->perms, md.gid, md.uid, e->lba, hdr, 0);
             if (out != EXIT_SUCCESS) return out;
-            char new_src[PBFS_MAX_PATH_LEN];
-            snprintf(new_src, PBFS_MAX_PATH_LEN, "%s/%s", src_dir, e->name);
-            out = pbfs_list_dir_recursive(fp, hdr, new_src, temp_path, temp_path);
+            
+            out = pbfs_list_dir_recursive(fp, hdr, new_src, dst_dir);
             if (out != EXIT_SUCCESS) return out;
         }
     }
@@ -1627,18 +1634,18 @@ int pbfs_copy(const char* image_path, const char* src_path, const char* dst_path
     PBFS_DMM_Entry src_entry;
     PBFS_Metadata src_md;
     int out = pbfs_find_entry((char*)src_path, &src_entry, &dummy, fp, &hdr);
-    if (out != EXIT_SUCCESS) { fclose(fp); return out; }
+    if (out != EXIT_SUCCESS) { fclose(fp); fprintf(stderr, "No such file/directory: %s\n", src_path); return out; }
 
     fseek(fp, LBA(uint128_to_u64(src_entry.lba), hdr.block_size), SEEK_SET);
     fread(&src_md, sizeof(PBFS_Metadata), 1, fp);
 
-    char temp_path[PBFS_MAX_PATH_LEN];
-
     if (src_entry.type & METADATA_FLAG_FILE) {
         uint8_t* buffer = NULL;
         size_t size = 0;
+
         out = pbfs_read_file_ex((char*)src_path, &buffer, &size, fp, &hdr, 1);
         if (out != EXIT_SUCCESS) { fclose(fp); return out; }
+        
         out = pbfs_add_ex(fp, buffer, size, &hdr, (char*)dst_path, 0, 0, src_entry.type, src_entry.perms);
         if (buffer) free(buffer);
         fclose(fp);
@@ -1646,13 +1653,14 @@ int pbfs_copy(const char* image_path, const char* src_path, const char* dst_path
     } else if (src_entry.type & METADATA_FLAG_DIR) {
         out = pbfs_add_dir_ex(fp, dst_path, src_entry.perms, src_md.gid, src_md.uid, src_entry.lba, &hdr, 0);
         if (out != EXIT_SUCCESS) { fclose(fp); return out; }
-        snprintf(temp_path, PBFS_MAX_PATH_LEN, "%s", dst_path);
-        out = pbfs_list_dir_recursive(fp, &hdr, src_path, temp_path, dst_path);
+        
+        out = pbfs_list_dir_recursive(fp, &hdr, src_path, dst_path);
         fclose(fp);
         return out;
     }
 
     fclose(fp);
+    fprintf(stderr, "Unknown/Unsupported type of file: %s\n", file_type_to_str(src_entry.type));
     return InvalidArgument;
 }
 
