@@ -1,0 +1,535 @@
+#include <pbfs.h>
+#include <pbfs_structs.h>
+#include <pbfs_structs_64.h>
+
+#define PBFS_NDRIVERS
+#ifdef PBFS_WDRIVERS
+    #undef PBFS_WDRIVERS
+#endif
+
+#include <pbfs-fs.h>
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+#define ALIGN_UP(num, align) (((num) + ((align) - 1)) & ~((align) - 1))
+
+// static funcs
+static bool validate_hdr_magic(PBFS_Header* hdr) {
+    if (memcmp(hdr->magic, PBFS_MAGIC, PBFS_MAGIC_LEN) != 0) return false;
+    return true;
+}
+
+static void hdr_to_hdr64(PBFS_Header* src, PBFS_Header64* dst) {
+    memcpy(&dst->magic, &src->magic, PBFS_MAGIC_LEN);
+    
+    dst->volume_id = uint128_to_u64(src->volume_id);
+
+    dst->bitmap_lba = src->bitmap_lba;
+    dst->sysinfo_lba = src->sysinfo_lba;
+    dst->kernel_table_lba = src->kernel_table_lba;
+    dst->dmm_root_lba = src->dmm_root_lba;
+    dst->boot_partition_lba = src->boot_partition_lba;
+    dst->data_start_lba = src->data_start_lba;
+
+    dst->total_blocks = uint128_to_u64(src->total_blocks);
+    dst->block_size = src->block_size;
+
+    memcpy(&dst->disk_name, &src->disk_name, PBFS_DISK_NAME_LEN);
+}
+
+static void bitmap_to_bitmap64(PBFS_Bitmap* src, PBFS_Bitmap64* dst) {
+    memcpy(&dst->bytes, &src->bytes, sizeof(src->bytes));
+    dst->extender_lba = uint128_to_u64(src->extender_lba);
+}
+
+static void dmmentry_to_dmmentry64(PBFS_DMM_Entry* src, PBFS_DMM_Entry64* dst) {
+    memcpy(&dst->name, &src->name, PBFS_MAX_NAME_LEN);
+    dst->lba = uint128_to_u64(src->lba);
+    dst->type = src->type;
+    dst->perms = src->perms;
+    dst->created_timestamp = src->created_timestamp;
+    dst->modified_timestamp = src->modified_timestamp;
+}
+
+static void dmm_to_dmm64(PBFS_DMM* src, PBFS_DMM64* dst) {
+    for (uint64_t i = 0; i < src->entry_count; i++) {
+        dmmentry_to_dmmentry64(&src->entries[i], &dst->entries[i]);
+    }
+    dst->entry_count = src->entry_count;
+    dst->extender_lba = uint128_to_u64(src->extender_lba);
+}
+
+static void kernelentry_to_kernelentry64(PBFS_Kernel_Entry* src, PBFS_Kernel_Entry64* dst) {
+    memcpy(&dst->name, &src->name, PBFS_MAX_NAME_LEN);
+    dst->lba = uint128_to_u64(src->lba);
+}
+
+static void kernel_table_to_kernel_table64(PBFS_Kernel_Table* src, PBFS_Kernel_Table64* dst) {
+    for (uint64_t i = 0; i < src->entry_count; i++) {
+        kernelentry_to_kernelentry64(&src->entries[i], &dst->entries[i]);
+    }
+    dst->entry_count = src->entry_count;
+    dst->extender_lba = uint128_to_u64(src->extender_lba);
+}
+
+static int bitmap_test_recursive(PBFS_Bitmap64* current, uint64_t lba, uint64_t bitmap_idx, struct pbfs_mount* mnt) {
+    if (is_lba_in_current_bitmap(uint128_from_u64(lba), uint128_from_u64(bitmap_idx))) {
+        uint64_t local_bit = lba % (PBFS_BITMAP_LIMIT * 8);
+        return bitmap_bit_test(current->bytes, local_bit);
+    }
+
+    uint64_t ext_lba = current->extender_lba;
+    if (ext_lba <= 1) return -1;
+
+    PBFS_Bitmap next = {0};
+    PBFS_Bitmap64 next64 = {0};
+    if (pbfs_read(mnt, ext_lba, sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) return 0;
+    bitmap_to_bitmap64(&next, &next64);
+
+    return bitmap_test_recursive(&next64, lba, bitmap_idx + 1, mnt);
+}
+
+static uint64_t bitmap_find_blocks(PBFS_Bitmap64* start, uint64_t start_lba, uint64_t blocks, struct pbfs_mount* mnt) {
+    if (blocks == 0) return 0;
+    
+    PBFS_Bitmap64 current = *start;
+    PBFS_Bitmap tmp_bitmap = {0};
+    uint64_t bitmap_idx = 0;
+
+    uint64_t run_start = 0;
+    uint64_t run_length = 0;
+    bool in_run = false;
+
+    for (uint64_t depth = 0; depth < PBFS_MAX_BITMAP_CHAIN; depth++) {
+        uint64_t slba = depth == 0 ? start_lba : 0;
+        for (uint64_t i = slba; i < (PBFS_BITMAP_LIMIT * 8); i++) {
+
+            if (!bitmap_bit_test(current.bytes, i)) {
+                if (!in_run) {
+                    run_start = (bitmap_idx * (PBFS_BITMAP_LIMIT * 8)) + i;
+                    run_length = 0;
+                    in_run = true;
+                }
+                run_length++;
+                if (run_length == blocks)
+                    return run_start;
+            } else {
+                in_run = false;
+                run_length = 0;
+            }
+        }
+        if (current.extender_lba <= 1)
+            return 0;
+
+        if (pbfs_read(mnt, current.extender_lba, sizeof(PBFS_Bitmap), &tmp_bitmap) != PBFS_RES_SUCCESS) return 0;
+        bitmap_to_bitmap64(&tmp_bitmap, &current);
+
+        bitmap_idx++;
+    }
+
+    return 0;
+}
+
+static uint64_t bitmap_set(PBFS_Bitmap* current, uint64_t lba, uint64_t bitmap_lba, uint64_t bitmap_idx, struct pbfs_mount* mnt, uint8_t value) { // value: 1/0 (default: 0)
+    PBFS_Bitmap64 current64 = {0};
+    bitmap_to_bitmap64(current, &current64);
+    
+    if (is_lba_in_current_bitmap(uint128_from_u64(lba), uint128_from_u64(bitmap_idx))) {
+        uint64_t local_bit = lba % (PBFS_BITMAP_LIMIT * 8);
+        if (value == 1)
+            bitmap_bit_set(current->bytes, local_bit);
+        else
+            bitmap_bit_clear(current->bytes, local_bit);
+        if (pbfs_write(mnt, bitmap_lba, sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) return 0;
+        return lba;
+    }
+
+    // Need next extender
+    PBFS_Bitmap next = {0};
+    PBFS_Bitmap64 next64 = {0};
+
+    if (current64.extender_lba <= 1) {
+        // Find a free block in CURRENT bitmap to use as the NEW extension block
+        // use the first available bit in the current data range
+        uint64_t new_block = 0;
+        bool found = false;
+        for (uint64_t i = 0; i < (PBFS_BITMAP_LIMIT * 8); i++) {
+            if (!bitmap_bit_test(current->bytes, i)) {
+                new_block = (bitmap_idx * (PBFS_BITMAP_LIMIT * 8)) + i;
+                bitmap_bit_set(current->bytes, i);
+                found = true;
+                break;
+            }
+        }
+
+        if (found == false) return 0; // Truly out of space
+
+        // Link current to new
+        current64.extender_lba = new_block;
+        current->extender_lba = uint128_from_u64(new_block);
+        if (pbfs_write(mnt, bitmap_lba, sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) return 0;
+
+        // Initialize new bitmap block
+        memset(&next, sizeof(PBFS_Bitmap), 0);
+        if (pbfs_write(mnt, new_block, sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) return 0;
+    } else {
+        if (pbfs_read(mnt, current64.extender_lba, sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) return 0;
+        bitmap_to_bitmap64(&next, &next64);
+    }
+
+    return bitmap_set(&next, lba, current64.extender_lba, ++bitmap_idx, mnt, value);
+}
+
+static int add_dmm_entry(struct pbfs_mount* mnt, PBFS_DMM* cur_dmm, uint64_t cur_dmm_lba, uint64_t lba, char* name, PBFS_Metadata_Flags type, PBFS_Permission_Flags perms, uint64_t created_ts, uint64_t modified_ts) {
+    PBFS_DMM dmm = *cur_dmm;
+    PBFS_DMM64 dmm64 = {0};
+    dmm_to_dmm64(&dmm, &dmm64);
+    PBFS_DMM* current = &dmm;
+    PBFS_DMM64* current64 = &dmm64;
+    uint64_t cur_lba = cur_dmm_lba;
+
+    for (int depth = 0; depth < PBFS_MAX_DMM_CHAIN; depth++) {
+        // If there is space in current DMM, add the entry
+        if (current->entry_count < PBFS_DMM_ENTRIES) {
+            PBFS_DMM_Entry* entry = &current->entries[current->entry_count];
+            entry->lba = uint128_from_u64(lba);
+            entry->type = type;
+            entry->created_timestamp = created_ts;
+            entry->modified_timestamp = modified_ts;
+            entry->perms = perms;
+            strncpy(entry->name, name, sizeof(entry->name) - 1);
+            entry->name[sizeof(entry->name) - 1] = '\0';
+            current->entry_count++;
+
+            return pbfs_write(mnt, cur_lba, sizeof(PBFS_DMM), current);
+        }
+
+        // If current DMM is full, check for extender
+        if (current64->extender_lba > 0) {
+            cur_lba = current64->extender_lba;
+            int out = pbfs_read(mnt, cur_lba, sizeof(PBFS_DMM), &dmm);
+            if (out != PBFS_RES_SUCCESS) return out;
+            continue;
+        }
+
+        // Need to allocate a new extender block
+        PBFS_DMM new_extender = {0};
+        new_extender.entry_count = 1;
+        PBFS_DMM_Entry* entry = &new_extender.entries[0];
+        entry->lba = uint128_from_u64(lba);
+        entry->type = type;
+        entry->created_timestamp = created_ts;
+        entry->modified_timestamp = modified_ts;
+        entry->perms = perms;
+        strncpy(entry->name, name, sizeof(entry->name) - 1);
+        entry->name[sizeof(entry->name) - 1] = '\0';
+
+        uint64_t new_ext_lba = bitmap_find_blocks(&mnt->root_bitmap64, mnt->header64.data_start_lba, 1, mnt);
+        if (new_ext_lba == 0) return PBFS_ERR_No_Space_Left;
+
+        // Write new extender to disk
+        int out = pbfs_write(mnt, new_ext_lba, sizeof(PBFS_DMM), &new_extender);
+        if (out != PBFS_RES_SUCCESS) return out;
+        bitmap_set(&mnt->root_bitmap, new_ext_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
+
+        // Link current DMM to extender
+        current->extender_lba = uint128_from_u64(new_ext_lba);
+
+        out = pbfs_write(mnt, cur_lba, sizeof(PBFS_DMM), &current);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+        return PBFS_RES_SUCCESS;
+    }
+
+    return PBFS_ERR_No_Space_Left;
+}
+
+static int remove_dmm_entry(struct pbfs_mount* mnt, char* name, uint64_t cur_dmm_lba) {
+    PBFS_DMM dmm = {0};
+
+    uint64_t current_lba = cur_dmm_lba;
+
+    for (int depth = 0; depth < PBFS_MAX_DMM_CHAIN; depth++) {
+        int out = pbfs_read(mnt, current_lba, sizeof(PBFS_DMM), &dmm);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+        int found_idx = -1;
+        for (uint32_t i = 0; i < dmm.entry_count; i++) {
+            if (strcmp(dmm.entries[i].name, name) == 0) {
+                found_idx = i;
+                break;
+            }
+        }
+
+        if (found_idx != -1) {
+            // Shift entries left to fill the gap
+            for (uint32_t i = found_idx; i < dmm.entry_count - 1; i++) {
+                dmm.entries[i] = dmm.entries[i + 1];
+            }
+            dmm.entry_count--;
+
+            // Write updated DMM block
+            return pbfs_write(mnt, current_lba, sizeof(PBFS_DMM), &dmm);
+        }
+
+        if (UINT128_GT(dmm.extender_lba, UINT128_ZERO)) {
+            current_lba = uint128_to_u64(dmm.extender_lba);
+        } else {
+            break;
+        }
+    }
+
+    return PBFS_ERR_File_Not_Found;
+}
+
+static int find_dmm_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, struct pbfs_mount* mnt) {
+    char normalized[PBFS_MAX_PATH_LEN];
+    path_normalize((char*)path, normalized, PBFS_MAX_PATH_LEN);
+
+    // Root
+    if (strcmp(normalized, "/") == 0) {
+        return -1; // Root dmm
+    }
+
+    uint64_t current_dmm_lba = mnt->header64.dmm_root_lba;
+    char part[PBFS_MAX_NAME_LEN];
+    int depth = 0;
+    int found = 0;
+
+    while (depth < PBFS_MAX_DMM_CHAIN) {
+        path_part(normalized, depth++, part, PBFS_MAX_NAME_LEN);
+        if (strlen(part) == 0) break;
+
+        found = 0;
+        uint64_t iter_lba = current_dmm_lba;
+        while (iter_lba > 0) {
+            PBFS_DMM dmm;
+            int out_res = pbfs_read(mnt, iter_lba, sizeof(PBFS_DMM), &dmm);
+            if (out_res != PBFS_RES_SUCCESS) return out_res;
+
+            for (uint32_t i = 0; i < dmm.entry_count; i++) {
+                if (strcmp(dmm.entries[i].name, part) == 0) {
+                    *out = dmm.entries[i];
+                    *out_lba = iter_lba;
+                    found = 1;
+                    break;
+                }
+            }
+            if (found) break;
+            iter_lba = uint128_to_u64(dmm.extender_lba);
+        }
+
+        if (!found) return PBFS_ERR_File_Not_Found;
+
+        // If we have more parts to go, this must be a directory
+        char next_part[PBFS_MAX_NAME_LEN];
+        path_part(normalized, depth, next_part, PBFS_MAX_NAME_LEN);
+        if (strlen(next_part) > 0) {
+            if (!(out->type & METADATA_FLAG_DIR)) return PBFS_ERR_Invalid_Path;
+            PBFS_Metadata md = {0};
+            int out_res = pbfs_read(mnt, uint128_to_u64(out->lba), sizeof(PBFS_Metadata), &md);
+            if (out_res != PBFS_RES_SUCCESS) return out_res;
+            if (md.data_offset < 1) {
+                return PBFS_ERR_Invalid_File_Or_Directory;
+            }
+
+            current_dmm_lba = uint128_to_u64(out->lba) + md.data_offset;
+        }
+    }
+    return PBFS_RES_SUCCESS;
+}
+
+static int retrieve_dir_dmm(int find_res, PBFS_DMM_Entry* dmme, PBFS_DMM* out, uint64_t* out_lba, struct pbfs_mount* mnt) {
+    if (find_res != -1 && find_res != PBFS_RES_SUCCESS) return find_res;
+    if (find_res == -1) {
+        int res = pbfs_read(mnt, mnt->header64.dmm_root_lba, sizeof(PBFS_DMM), out);
+        if (res != PBFS_RES_SUCCESS) return res;
+        *out_lba = mnt->header64.dmm_root_lba;
+        return PBFS_RES_SUCCESS;
+    } else {
+        PBFS_Metadata md = {0};
+        uint64_t dmme_lba = uint128_to_u64(dmme->lba);
+        int res = pbfs_read(mnt, dmme_lba, sizeof(PBFS_Metadata), &md);
+        if (res != PBFS_RES_SUCCESS) return res;
+
+        if (md.data_offset < 1) return PBFS_ERR_Invalid_File_Or_Directory;
+        *out_lba = md.data_offset + dmme_lba;
+
+        return pbfs_read(mnt, *out_lba, sizeof(PBFS_DMM), out);
+    }
+    return PBFS_ERR_UNKNOWN;
+}
+
+// API
+int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt) {
+    // Validate info
+    if (dev->block_count < 10) return PBFS_ERR_Device_Capacity_Too_Small;
+    if (dev->block_size < 512) return PBFS_ERR_Device_Block_Size_Too_Small;
+    dev->read_block(dev, 1, &mnt->header);
+
+    if (!validate_hdr_magic(&mnt->header)) return PBFS_ERR_Invalid_Header;
+    if (mnt->header.block_size != dev->block_size) return PBFS_ERR_Header_Unaligned;
+
+    if (
+        mnt->header64.bitmap_lba <= 1 ||
+        mnt->header64.dmm_root_lba <= 1 ||
+        mnt->header64.data_start_lba <= 1 ||
+        mnt->header64.sysinfo_lba <= 1
+    ) return PBFS_ERR_Invalid_Header;
+    
+    // Convert Header to 64-bit to save resources
+    hdr_to_hdr64(&mnt->header, &mnt->header64);
+    if (mnt->header64.total_blocks > dev->block_count) return PBFS_ERR_Header_Unaligned;
+
+    // Get Bitmap/DMM/Kernel Table (if present)
+    dev->read_block(dev, mnt->header64.bitmap_lba, &mnt->root_bitmap);
+    dev->read_block(dev, mnt->header64.dmm_root_lba, &mnt->root_dmm);
+    if (mnt->header64.kernel_table_lba > 1) {
+        dev->read_block(dev, mnt->header64.kernel_table_lba, &mnt->root_kernel_table);
+        mnt->kernel_table_present = true;
+    }
+
+    // Convert these too
+    bitmap_to_bitmap64(&mnt->root_bitmap, &mnt->root_bitmap64);
+    dmm_to_dmm64(&mnt->root_dmm, &mnt->root_dmm64);
+    if (mnt->kernel_table_present)
+        kernel_table_to_kernel_table64(&mnt->root_kernel_table, &mnt->root_kernel_table64);
+
+    // Done!
+    mnt->dev = dev;
+    mnt->active = true;
+    mnt->partition_start_lba = 0; // No parition support currently, will add soon
+    
+    return PBFS_RES_SUCCESS;
+}
+
+int pbfs_read_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+
+    uint64_t lba = mnt->partition_start_lba + fs_block;
+    mnt->dev->read_block(mnt->dev, lba, buffer);
+    return PBFS_RES_SUCCESS;
+}
+
+int pbfs_write_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+
+    uint64_t lba = mnt->partition_start_lba + fs_block;
+    mnt->dev->write_block(mnt->dev, lba, buffer);
+    return PBFS_RES_SUCCESS;
+}
+
+int pbfs_read(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+
+    uint8_t buf[mnt->header64.block_size];
+    uint64_t required_blocks = ALIGN_UP(size, mnt->header64.block_size) / mnt->header64.block_size;
+    size_t total_read_size = 0;
+
+    for (uint64_t i = 0; i < required_blocks; i++) {
+        uint64_t lba = mnt->partition_start_lba + fs_block + i;
+        mnt->dev->read_block(mnt->dev, lba, buf);
+
+        if (total_read_size + mnt->header64.block_size > size) {
+            uint64_t remaining_size = size - total_read_size;
+            memcpy(buffer + total_read_size, buf, remaining_size);
+            break;
+        } else {
+            memcpy(buffer + total_read_size, buf, mnt->header64.block_size);
+            total_read_size += mnt->header64.block_size;
+        }
+    }
+    return PBFS_RES_SUCCESS;
+}
+
+int pbfs_write(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+
+    uint8_t buf[mnt->header64.block_size];
+    uint64_t required_blocks = ALIGN_UP(size, mnt->header64.block_size) / mnt->header64.block_size;
+
+    uint64_t total_write_size = 0;
+    for (uint64_t i = 0; i < required_blocks; i++) {
+        uint64_t lba = mnt->partition_start_lba + fs_block + i;
+
+        if (total_write_size + mnt->header64.block_size > size) {
+            uint64_t remaining_size = size - total_write_size;
+            memcpy(buf, buffer + total_write_size, remaining_size);
+            mnt->dev->write_block(mnt->dev, lba, buf);
+            break;
+        } else {
+            memcpy(buf, buffer + total_write_size, mnt->header64.block_size);
+            total_write_size += mnt->header64.block_size;
+        }
+
+        mnt->dev->write_block(mnt->dev, lba, buf);
+    }
+
+    return PBFS_RES_SUCCESS;
+}
+
+int pbfs_flush(struct pbfs_mount* mnt) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+
+    mnt->dev->flush(mnt->dev);
+    return PBFS_RES_SUCCESS;
+}
+
+int pbfs_add(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBFS_Metadata_Flags type, PBFS_Permission_Flags permissions, uint8_t* data, size_t data_size) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (strlen(path) < 1) return PBFS_ERR_No_Path;
+    if (type == METADATA_FLAG_INVALID) return PBFS_ERR_Wrong_Type;
+    if (permissions == PERM_INVALID) return PBFS_ERR_Wrong_Permissions;
+
+    uint64_t required_blocks = ALIGN_UP(data_size, mnt->header64.block_size) / mnt->header64.block_size;
+    
+    uint64_t lba = bitmap_find_blocks(&mnt->root_bitmap64, mnt->header64.data_start_lba, required_blocks + 1, mnt);
+    if (lba <= 1) return PBFS_ERR_No_Space_Left;
+
+    char dname[PBFS_MAX_PATH_LEN];
+    char name[PBFS_MAX_NAME_LEN];
+    path_basename(path, name, PBFS_MAX_NAME_LEN);
+    path_dirname(path, dname, PBFS_MAX_PATH_LEN);
+
+    PBFS_DMM_Entry parent = {0};
+    uint64_t parent_lba = {0};
+    int out = find_dmm_entry(dname, &parent, &parent_lba, mnt);
+    if (out != -1 && out != PBFS_RES_SUCCESS) return out;
+
+    if (out != -1) {
+        // check perms
+        if (!(parent.perms & PERM_WRITE)) return PBFS_ERR_Wrong_Permissions;
+    }
+
+    PBFS_DMM parent_dmm = {0};
+    uint64_t parent_dmm_lba = {0};
+    out = retrieve_dir_dmm(out, &parent, &parent_dmm, &parent_dmm_lba, mnt);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    PBFS_Metadata md = {0};
+    memcpy(&md.name, name, strlen(name));
+    md.uid = uid;
+    md.gid = gid;
+    md.permission_offset = 0;
+    md.created_timestamp = 0;
+    md.modified_timestamp = 0;
+    md.data_size = uint128_from_u64(data_size);
+    md.data_offset = 1;
+    md.flags = type;
+    md.ex_flags = permissions;
+    md.extender_lba = UINT128_ZERO;
+
+    out = pbfs_write(mnt, lba, sizeof(PBFS_Metadata), &md);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    out = pbfs_write(mnt, lba + 1, data_size, data);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    for (uint64_t i = 0; i < required_blocks + 1; i++) {
+        bitmap_set(&mnt->root_bitmap, lba + i, mnt->header64.bitmap_lba, 0, mnt, 1);
+    }
+
+    return add_dmm_entry(mnt, &parent_dmm, parent_dmm_lba, lba, name, type, permissions, md.created_timestamp, md.modified_timestamp);
+}

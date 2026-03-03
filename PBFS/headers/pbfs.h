@@ -40,6 +40,7 @@ static const uint128_t zero128 = {{0, 0, 0, 0}};
 #define UINT128_ZERO zero128
 
 // Errors
+#ifdef PBFS_CLI
 typedef enum {
     //General
     Unkown,
@@ -85,3 +86,4 @@ typedef enum {
     NoMemoryAvailable,
     NoSpaceAvailable
 } Errors;
+#endif

@@ -1,65 +1,52 @@
-# Variables
-BuildDir := ../build-fs
-ObjDir := $(BuildDir)/objs
+BASE_DIR := ..
 
-pbfs_main_fs := pbfs.c
-pbfs_main_fs_out := $(BuildDir)/pbfs.o
+SRC_DIR := .
+TOOLS_DIR := $(BASE_DIR)/tools
 
-HeadersDir := ../headers
+HEADER_DIR := $(BASE_DIR)/headers
 
-PefiDir := ../PEFI
-PefiHeaderDir := $(PefiDir)/includes
-PefiLibDir := $(PefiDir)/build
+BIN_DIR := $(BASE_DIR)/build-fs
+BUILD_DIR := $(BIN_DIR)/objs
 
-tool_disk_io_o := $(ObjDir)/disk_io_pm.o
-tool_disk_params_o := $(ObjDir)/disk_params_pm.o
+SRCS_WDRIVER := 
+SRCS_NDRIVER := $(SRC_DIR)/pbfs-fs-ndrivers.c
 
-tool_disk_io := ../tools/disk_io_pm.asm
-tool_disk_params := ../tools/disk_params_pm.asm
+SRCS_UTILS := $(BASE_DIR)/tools/utils.c
+OBJS_UTILS := $(patsubst $(TOOLS_DIR)/%.o,$(BUILD_DIR)/%.c,$(SRCS_UTILS))
 
-OBJS := $(tool_disk_io_o) $(tool_disk_params_o)
+OBJS_WDRIVER := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS_WDRIVER))
+OBJS_NDRIVER := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS_NDRIVER))
 
 CC := gcc
-CFLAGS := -ffreestanding -nostartfiles -fno-stack-protector -fno-pic -nostdlib -I$(HeadersDir) -I$(PefiHeaderDir) -L$(PefiLibDir) -lpefi
-
-LD := ld
-LDFLAGS := -nostdlib -m32 -shared
-
-ASM := nasm
-ASMFLAGS := -f elf32
-
 AR := ar
 
+CFLAGS := -I $(HEADER_DIR) -Wall -Wextra -Werror=implicit-function-declaration -std=gnu11 -pipe -fstack-protector-strong -g -ffreestanding
+ARFLAGS := rcs
 
-TARGET := $(BuildDir)/pbfs.a
+LIB_NDRIVERS := $(BIN_DIR)/libpbfs-ndrivers.a
+LIB_WDRIVERS := $(BIN_DIR)/libpbfs-wdrivers.a
 
-# === TARGET ===
-.PHONY: all clean
+.PHONY: all clean wdrivers ndrivers
 
-all: $(BuildDir) $(ObjDir) $(TARGET)
+$(LIB_NDRIVERS): $(OBJS_NDRIVER) $(OBJS_UTILS)
+	@mkdir -p $(BIN_DIR)
+	$(AR) $(ARFLAGS) $@ $^
 
-# Make the dirs
-$(BuildDir):
-	mkdir -p $(BuildDir)
+$(LIB_WDRIVERS): $(OBJS_WDRIVER) $(OBJS_UTILS)
+	@mkdir -p $(BIN_DIR)
+	$(AR) $(ARFLAGS) $@ $^
 
-$(ObjDir):
-	mkdir -p $(ObjDir)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-# Assemble
-$(tool_disk_io_o): $(tool_disk_io)
-	@echo "Creating Assembly files..."
-	$(ASM) $(ASMFLAGS) $(tool_disk_io) -o $(tool_disk_io_o)
+$(BUILD_DIR)/%.o: $(TOOLS_DIR)/%.c
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(tool_disk_params_o): $(tool_disk_params)
-	$(ASM) $(ASMFLAGS) $< -o $@
-
-$(pbfs_main_fs_out): $(pbfs_main_fs)
-	$(CC) $(CFLAGS) $< -o $@
-
-# Link and build
-$(TARGET): $(OBJS)
-	$(AR) rsc $(TARGET) $(OBJS)
-
-# Clean
 clean:
-	rm -rf $(BuildDir) $(TARGET)
+	rm -rf $(BUILD_DIR) $(LIB_WDRIVERS) $(LIB_NDRIVERS)
+
+wdrivers: $(LIB_WDRIVERS)
+ndrivers: $(LIB_NDRIVERS)
+all: $(LIB_NDRIVERS)

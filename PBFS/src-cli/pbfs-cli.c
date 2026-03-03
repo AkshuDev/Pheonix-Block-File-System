@@ -1,8 +1,7 @@
-#define CLI
+#define PBFS_CLI
 #include <pbfs.h>
 #include <pbfs-cli.h>
 #include <pbfs_structs.h>
-#undef CLI
 
 #include <stdio.h>
 #include <string.h>

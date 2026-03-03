@@ -1,11 +1,11 @@
 #pragma once
 
-#include <linux/limits.h>
 #include <stdint.h>
 
 #define PBFS_MAGIC "PBFS\0\0"
 #define PBFS_MAGIC_LEN 6
 #define PBFS_BITMAP_LIMIT 496
+#define PBFS_DISK_NAME_LEN 32
 
 #define PBFS_KERNEL_TABLE_ENTRIES 6
 #define PBFS_DMM_ENTRIES 4
@@ -51,6 +51,7 @@ typedef struct {
 
 typedef struct {
     PBFS_Kernel_Entry entries[PBFS_KERNEL_TABLE_ENTRIES];
+    uint64_t entry_count;
 
     uint8_t reserved[16];
     uint128_t extender_lba;
@@ -98,6 +99,8 @@ typedef enum {
 } PBFS_Metadata_Flags;
 
 typedef struct {
+    char name[PBFS_MAX_NAME_LEN];
+    
     uint32_t uid;
     uint32_t gid;
 
