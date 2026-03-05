@@ -3,8 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <pbfs_structs.h>
-#include <pbfs_structs_64.h>
+#include "pbfs_structs.h"
+#include "pbfs_structs_64.h"
 #include <stdbool.h>
 
 struct pbfs_funcs {

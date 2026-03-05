@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
-#include <pbfs_structs.h>
+#include "pbfs_structs.h"
 
 typedef struct {
     char magic[PBFS_MAGIC_LEN];
