@@ -15,6 +15,8 @@
 
 #define ALIGN_UP(num, align) (((num) + ((align) - 1)) & ~((align) - 1))
 
+static struct pbfs_funcs funcs = {0};
+
 // static funcs
 static bool validate_hdr_magic(PBFS_Header* hdr) {
     if (memcmp(hdr->magic, PBFS_MAGIC, PBFS_MAGIC_LEN) != 0) return false;
@@ -246,10 +248,12 @@ static int add_dmm_entry(struct pbfs_mount* mnt, PBFS_DMM* cur_dmm, uint64_t cur
     return PBFS_ERR_No_Space_Left;
 }
 
-static int remove_dmm_entry(struct pbfs_mount* mnt, char* name, uint64_t cur_dmm_lba) {
+static int remove_dmm_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur_dmm_lba) {
     PBFS_DMM dmm = {0};
 
     uint64_t current_lba = cur_dmm_lba;
+    char name[PBFS_MAX_NAME_LEN];
+    path_basename(name_, name, PBFS_MAX_NAME_LEN);
 
     for (int depth = 0; depth < PBFS_MAX_DMM_CHAIN; depth++) {
         int out = pbfs_read(mnt, current_lba, sizeof(PBFS_DMM), &dmm);
@@ -363,6 +367,79 @@ static int retrieve_dir_dmm(int find_res, PBFS_DMM_Entry* dmme, PBFS_DMM* out, u
 }
 
 // API
+int pbfs_init(struct pbfs_funcs* functions) {
+    funcs = *functions;
+    return PBFS_RES_SUCCESS;
+}
+
+int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint8_t boot_part_size, uint64_t volume_id) {
+    uint8_t bitmap_lba = 2;
+    uint8_t dmm_lba = 3;
+    uint8_t data_lba = 5;
+    uint8_t kernel_table_lba = 0;
+    uint8_t boot_part_lba = 0;
+    uint8_t sysinfo_lba = 4;
+
+    if (reserve_kernel_table == 1) {
+        kernel_table_lba = 2;
+        bitmap_lba++;
+        dmm_lba++;
+        sysinfo_lba++;
+        data_lba++;
+    }
+    if (boot_part_size > 0) {
+        boot_part_lba = data_lba;
+        data_lba += boot_part_size;
+    }
+
+    uint8_t* disk = (uint8_t*)funcs.malloc(dev->block_size);
+    if (!disk) return PBFS_ERR_Allocation_Failed;
+    memset(disk, 0, dev->block_size);
+    dev->write_block(dev, 0, disk);
+
+    if (reserve_kernel_table == 1) {
+        dev->write_block(dev, kernel_table_lba, disk);
+    }
+    if (boot_part_size > 0) {
+        for (uint64_t i = boot_part_lba; i < boot_part_size + boot_part_lba; i++) {
+            dev->write_block(dev, i, disk);
+        }
+    }
+    dev->write_block(dev, sysinfo_lba, disk);
+    dev->write_block(dev, dmm_lba, disk);
+
+    bitmap_bit_set(disk, 0);
+    bitmap_bit_set(disk, 1);
+    bitmap_bit_set(disk, sysinfo_lba);
+    bitmap_bit_set(disk, dmm_lba);
+    bitmap_bit_set(disk, bitmap_lba);
+    if (reserve_kernel_table == 1) bitmap_bit_set(disk, kernel_table_lba);
+    for (int i = boot_part_lba; i < boot_part_lba + boot_part_size; i++) 
+        bitmap_bit_set(disk, i);
+
+    dev->write_block(dev, bitmap_lba, disk);
+
+    PBFS_Header* hdr = (PBFS_Header*)disk;
+    hdr->block_size = dev->block_size;
+    hdr->total_blocks = uint128_from_u64(dev->block_count);
+    memcpy(&hdr->disk_name, dev->name, PBFS_DISK_NAME_LEN);
+    memcpy(&hdr->magic, PBFS_MAGIC, PBFS_MAGIC_LEN);
+    hdr->volume_id = uint128_from_u64(volume_id);
+    hdr->bitmap_lba = bitmap_lba;
+    hdr->kernel_table_lba = kernel_table_lba;
+    hdr->dmm_root_lba = dmm_lba;
+    hdr->sysinfo_lba = sysinfo_lba;
+    hdr->boot_partition_lba = boot_part_lba;
+    hdr->data_start_lba = data_lba;
+
+    dev->write_block(dev, 1, disk);
+    dev->flush(dev);
+
+    funcs.free(disk);
+
+    return PBFS_RES_SUCCESS;
+}
+
 int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt) {
     // Validate info
     if (dev->block_count < 10) return PBFS_ERR_Device_Capacity_Too_Small;
@@ -372,16 +449,16 @@ int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt) {
     if (!validate_hdr_magic(&mnt->header)) return PBFS_ERR_Invalid_Header;
     if (mnt->header.block_size != dev->block_size) return PBFS_ERR_Header_Unaligned;
 
+    // Convert Header to 64-bit to save resources
+    hdr_to_hdr64(&mnt->header, &mnt->header64);
+    if (mnt->header64.total_blocks > dev->block_count) return PBFS_ERR_Header_Unaligned;
+
     if (
         mnt->header64.bitmap_lba <= 1 ||
         mnt->header64.dmm_root_lba <= 1 ||
         mnt->header64.data_start_lba <= 1 ||
         mnt->header64.sysinfo_lba <= 1
     ) return PBFS_ERR_Invalid_Header;
-    
-    // Convert Header to 64-bit to save resources
-    hdr_to_hdr64(&mnt->header, &mnt->header64);
-    if (mnt->header64.total_blocks > dev->block_count) return PBFS_ERR_Header_Unaligned;
 
     // Get Bitmap/DMM/Kernel Table (if present)
     dev->read_block(dev, mnt->header64.bitmap_lba, &mnt->root_bitmap);
@@ -532,4 +609,238 @@ int pbfs_add(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBF
     }
 
     return add_dmm_entry(mnt, &parent_dmm, parent_dmm_lba, lba, name, type, permissions, md.created_timestamp, md.modified_timestamp);
+}
+
+int pbfs_add_dir(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBFS_Permission_Flags permissions) {
+    PBFS_DMM dmm;
+    memset(&dmm, 0, sizeof(PBFS_DMM));
+    return pbfs_add(mnt, path, uid, gid, METADATA_FLAG_DIR, permissions, (uint8_t*)&dmm, sizeof(PBFS_DMM));
+}
+
+int pbfs_remove(struct pbfs_mount* mnt, char* path) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (strlen(path) < 1) return PBFS_ERR_No_Path;
+
+    PBFS_DMM_Entry e = {0};
+    uint64_t e_lba = 0;
+    int out = find_dmm_entry(path, &e, &e_lba, mnt);
+    if (out != -1 && out != PBFS_RES_SUCCESS) return out;
+    if (out == -1) return PBFS_ERR_Cannot_Remove_Root;
+    if (e.perms & PERM_LOCKED) return PBFS_ERR_Wrong_Permissions;
+
+    PBFS_Metadata md = {0};
+    e_lba = uint128_to_u64(e.lba);
+    out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
+    if (out != PBFS_RES_SUCCESS) return out;
+    uint64_t ext_lba = uint128_to_u64(md.extender_lba);
+    uint64_t md_data_size = uint128_to_u64(md.data_size);
+
+    if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+    for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
+        bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
+    }
+    
+    while (ext_lba != 0) {
+        e_lba = ext_lba;
+        out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
+        if (out != PBFS_RES_SUCCESS) return out;
+        ext_lba = uint128_to_u64(md.extender_lba);
+
+        if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+        for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
+            bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
+        }
+    }
+
+    return remove_dmm_entry(mnt, path, e_lba);
+}
+
+int pbfs_update_file(struct pbfs_mount* mnt, char* path, uint8_t* data, size_t data_size) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (strlen(path) < 1) return PBFS_ERR_No_Path;
+
+    PBFS_DMM_Entry e = {0};
+    uint64_t e_lba = 0;
+    int out = find_dmm_entry(path, &e, &e_lba, mnt);
+    if (out != -1 && out != PBFS_RES_SUCCESS) return out;
+    if (out != -1) return PBFS_ERR_Invalid_Path;
+    if (!(e.perms != PERM_WRITE)) return PBFS_ERR_Wrong_Permissions;
+
+    PBFS_Metadata og_md = {0};
+    PBFS_Metadata md = {0};
+    e_lba = uint128_to_u64(e.lba);
+    out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &og_md);
+    memcpy(&md, &og_md, sizeof(PBFS_Metadata));
+    if (out != PBFS_RES_SUCCESS) return out;
+    uint64_t ext_lba = uint128_to_u64(md.extender_lba);
+
+    uint64_t md_data_size = uint128_to_u64(md.data_size);
+    if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+    for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
+        bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
+    }
+    
+    while (ext_lba != 0) {
+        e_lba = ext_lba;
+        out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
+        if (out != PBFS_RES_SUCCESS) return out;
+        ext_lba = uint128_to_u64(md.extender_lba);
+        md_data_size = uint128_to_u64(md.data_size);
+
+        if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+        for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
+            bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
+        }
+    }
+
+    remove_dmm_entry(mnt, path, e_lba);
+    return pbfs_add(mnt, path, og_md.uid, og_md.gid, og_md.flags, og_md.ex_flags, data, data_size);
+}
+
+int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_Flags new_permissions) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (strlen(path) < 1) return PBFS_ERR_No_Path;
+
+    if (new_permissions == PERM_INVALID) return PBFS_ERR_Wrong_Permissions;
+
+    char dname[PBFS_MAX_PATH_LEN];
+    char name[PBFS_MAX_NAME_LEN];
+    path_basename(path, name, PBFS_MAX_NAME_LEN);
+    path_dirname(path, dname, PBFS_MAX_PATH_LEN);
+
+    PBFS_DMM_Entry parent = {0};
+    uint64_t parent_lba = {0};
+    int out = find_dmm_entry(dname, &parent, &parent_lba, mnt);
+    if (out != -1 && out != PBFS_RES_SUCCESS) return out;
+
+    PBFS_DMM parent_dmm = {0};
+    uint64_t parent_dmm_lba = {0};
+    out = retrieve_dir_dmm(out, &parent, &parent_dmm, &parent_dmm_lba, mnt);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    PBFS_DMM_Entry e = {0};
+    uint64_t e_lba = 0;
+    out = find_dmm_entry(path, &e, &e_lba, mnt);
+    if (out != -1 && out != PBFS_RES_SUCCESS) return out;
+    if (out != -1) return PBFS_ERR_Invalid_Path;
+    
+    PBFS_Metadata md = {0};
+    uint64_t md_lba = uint128_to_u64(e.lba);
+    out = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    md.ex_flags = new_permissions;
+    out = pbfs_write(mnt, md_lba, sizeof(PBFS_Metadata), &md);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    out = remove_dmm_entry(mnt, path, e_lba);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    return add_dmm_entry(mnt, &parent_dmm, parent_dmm_lba, e_lba, name, md.flags, new_permissions, md.created_timestamp, md.modified_timestamp);
+}
+
+int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_t* data_size) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (strlen(path) < 1) return PBFS_ERR_No_Path;
+
+    char dname[PBFS_MAX_PATH_LEN];
+    char name[PBFS_MAX_NAME_LEN];
+    path_basename(path, name, PBFS_MAX_NAME_LEN);
+    path_dirname(path, dname, PBFS_MAX_PATH_LEN);
+
+    PBFS_DMM_Entry e = {0};
+    uint64_t e_lba = 0;
+    int out = find_dmm_entry(path, &e, &e_lba, mnt);
+    if (out != -1 && out != PBFS_RES_SUCCESS) return out;
+    if (out != -1) return PBFS_ERR_Invalid_Path;
+    if (!(e.perms & PERM_READ)) return PBFS_ERR_Wrong_Permissions;
+    
+    PBFS_Metadata md = {0};
+    uint64_t md_lba = uint128_to_u64(e.lba);
+    out = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    uint64_t ext_lba = uint128_to_u64(md.extender_lba);
+    uint64_t ext_lba2 = ext_lba;
+    uint64_t md_data_size = uint128_to_u64(md.data_size);
+
+    if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+    
+    uint64_t total_size = md_data_size;
+    while (ext_lba2 != 0) {
+        e_lba = ext_lba;
+        out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
+        if (out != PBFS_RES_SUCCESS) return out;
+        ext_lba = uint128_to_u64(md.extender_lba);
+        md_data_size = uint128_to_u64(md.data_size);
+
+        if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+        total_size += md_data_size;
+    }
+    
+    uint8_t* data = funcs.malloc(total_size);
+    if (data == NULL) return PBFS_ERR_Allocation_Failed;
+    *data_size = total_size;
+    *data_out = data;
+
+    out = pbfs_read(mnt, e_lba, md_data_size, data);
+    if (out != PBFS_RES_SUCCESS) return out;
+    
+    while (ext_lba != 0) {
+        e_lba = ext_lba;
+        out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
+        if (out != PBFS_RES_SUCCESS) return out;
+        ext_lba = uint128_to_u64(md.extender_lba);
+        md_data_size = uint128_to_u64(md.data_size);
+
+        if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+        out = pbfs_read(mnt, e_lba, md_data_size, data);
+        if (out != PBFS_RES_SUCCESS) return out;
+    }
+
+    return PBFS_RES_SUCCESS;
+}
+
+int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (strlen(path) < 1) return PBFS_ERR_No_Path;
+    if (strlen(new_path) < 1) return PBFS_ERR_No_Path;
+
+    PBFS_DMM_Entry e = {0};
+    uint64_t e_lba = 0;
+    int out = find_dmm_entry(path, &e, &e_lba, mnt);
+    if (out != -1 && out != PBFS_RES_SUCCESS) return out;
+    if (out != -1) return PBFS_ERR_Invalid_Path;
+
+    PBFS_Metadata md = {0};
+    uint64_t md_lba = uint128_to_u64(e.lba);
+    out = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    uint8_t* data = NULL;
+    size_t data_size = 0;
+    out = pbfs_read_file(mnt, path, &data, &data_size);
+    if (out != PBFS_RES_SUCCESS) {
+        if (data_size > 0 || data != NULL) funcs.free(data);
+        return out;
+    }
+
+    out = pbfs_add(mnt, new_path, md.uid, md.gid, md.flags, md.ex_flags, data, data_size);
+    funcs.free(data);
+    return out;
+}
+
+int pbfs_move(struct pbfs_mount* mnt, char* path, char* new_path) {
+    int out = pbfs_copy(mnt, path, new_path);
+    if (out != PBFS_RES_SUCCESS) return out;
+    return pbfs_remove(mnt, path);
+}
+
+int pbfs_rename(struct pbfs_mount* mnt, char* path, char* new_path) {
+    return pbfs_move(mnt, path, new_path);
+}
+
+int pbfs_find_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, struct pbfs_mount* mnt) {
+    if (mnt->active != 1) return PBFS_ERR_Mount_Inactive;
+    return find_dmm_entry(path, out, out_lba, mnt);
 }

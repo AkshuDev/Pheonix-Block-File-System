@@ -5,7 +5,7 @@ build_dir := $(BaseDir)/build-cli
 obj_dir = $(build_dir)/objs
 headers_dir := $(BaseDir)/headers
 
-C_SRCFILES = $(wildcard *.c) $(BaseDir)/tools/utils.c
+C_SRCFILES = $(wildcard *.c) $(BaseDir)/tools/utils.c $(BaseDir)/src-fs/pbfs-fs-ndrivers.c
 H_SRCFILES = $(wildcard $(headers_dir)/*.h)
 
 C_OBJS = $(patsubst %.c, $(build_dir)/%.o, $(C_SRCFILES))

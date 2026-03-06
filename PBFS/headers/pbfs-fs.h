@@ -35,6 +35,20 @@ struct block_device {
         const void *buffer
     );
 
+    int (*read)(
+        struct block_device *dev,
+        uint64_t lba,
+        uint64_t count,
+        void *buffer
+    );
+
+    int (*write)(
+        struct block_device *dev,
+        uint64_t lba,
+        uint64_t count,
+        const void *buffer
+    );
+
     int (*flush)(
         struct block_device *dev
     );
@@ -61,15 +75,25 @@ struct pbfs_mount {
     uint64_t partition_start_lba;
 };
 
+
+int pbfs_init(struct pbfs_funcs* functions) __attribute__((used));
+int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint8_t boot_part_size, uint64_t volume_id) __attribute__((used));
 int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt) __attribute__((used));
-
 int pbfs_read_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute__((used));
-int pbfs_write_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute((used));
+int pbfs_write_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute__((used));
 int pbfs_read(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) __attribute__((used));
-int pbfs_write(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) __attribute((used));
+int pbfs_write(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) __attribute__((used));
 int pbfs_flush(struct pbfs_mount* mnt) __attribute__((used));
-
 int pbfs_add(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBFS_Metadata_Flags type, PBFS_Permission_Flags permissions, uint8_t* data, size_t data_size) __attribute__((used));
+int pbfs_add_dir(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBFS_Permission_Flags permissions) __attribute__((used));
+int pbfs_remove(struct pbfs_mount* mnt, char* path) __attribute__((used));
+int pbfs_update_file(struct pbfs_mount* mnt, char* path, uint8_t* data, size_t data_size) __attribute__((used));
+int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_Flags new_permissions) __attribute__((used));
+int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_t* data_size) __attribute__((used));
+int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used));
+int pbfs_move(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used));
+int pbfs_rename(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used));
+int pbfs_find_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, struct pbfs_mount* mnt) __attribute__((used));
 #endif
 
 enum PBFS_Result {
@@ -98,4 +122,8 @@ enum PBFS_Result {
     PBFS_ERR_Data_Unaligned,
 
     PBFS_ERR_No_Space_Left,
+
+    PBFS_ERR_Cannot_Remove_Root,
+
+    PBFS_ERR_Allocation_Failed
 };
