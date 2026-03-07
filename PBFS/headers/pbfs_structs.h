@@ -70,7 +70,7 @@ typedef struct {
     PBFS_DMM_Entry entries[PBFS_DMM_ENTRIES];
 
     uint64_t entry_count;
-    uint8_t reserved[88];
+    uint8_t reserved[72];
     uint128_t extender_lba;
 } PBFS_DMM __attribute__((packed));
 
