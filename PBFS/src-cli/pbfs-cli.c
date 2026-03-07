@@ -162,9 +162,9 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
         return InvalidHeader;
     }
 
-    fseek(f, 512, SEEK_SET);
+    fseek(f, PBFS_HDR_START_BYTE, SEEK_SET);
     fread(hdr, sizeof(PBFS_Header), 1, f);
-    if (pbfs_verify_header(hdr) != EXIT_SUCCESS) {
+    if (pbfs_verify_header(hdr) != PBFS_RES_SUCCESS) {
         fprintf(stderr, "Invalid Header!\n");
         free(hdr);
         return InvalidHeader;

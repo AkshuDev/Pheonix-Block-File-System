@@ -373,23 +373,24 @@ int pbfs_init(struct pbfs_funcs* functions) {
 }
 
 int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint8_t boot_part_size, uint64_t volume_id) {
-    uint8_t bitmap_lba = 2;
-    uint8_t dmm_lba = 3;
-    uint8_t data_lba = 5;
+    uint8_t start_lba = PBFS_HDR_START_LBA;
+    if (boot_part_size > 0) {
+        start_lba += boot_part_size;
+    }
+
+    uint8_t bitmap_lba = 1 + start_lba;
+    uint8_t dmm_lba = 2 + start_lba;
+    uint8_t sysinfo_lba = 3 + start_lba;
+    uint8_t data_lba = 4 + start_lba;
     uint8_t kernel_table_lba = 0;
     uint8_t boot_part_lba = 0;
-    uint8_t sysinfo_lba = 4;
 
     if (reserve_kernel_table == 1) {
-        kernel_table_lba = 2;
+        kernel_table_lba = 1 + start_lba;
         bitmap_lba++;
         dmm_lba++;
         sysinfo_lba++;
         data_lba++;
-    }
-    if (boot_part_size > 0) {
-        boot_part_lba = data_lba;
-        data_lba += boot_part_size;
     }
 
     uint8_t* disk = (uint8_t*)funcs.malloc(dev->block_size);
@@ -408,8 +409,7 @@ int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint8_t 
     dev->write_block(dev, sysinfo_lba, disk);
     dev->write_block(dev, dmm_lba, disk);
 
-    bitmap_bit_set(disk, 0);
-    bitmap_bit_set(disk, 1);
+    bitmap_bit_set(disk, start_lba);
     bitmap_bit_set(disk, sysinfo_lba);
     bitmap_bit_set(disk, dmm_lba);
     bitmap_bit_set(disk, bitmap_lba);
@@ -432,7 +432,7 @@ int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint8_t 
     hdr->boot_partition_lba = boot_part_lba;
     hdr->data_start_lba = data_lba;
 
-    dev->write_block(dev, 1, disk);
+    dev->write_block(dev, start_lba, disk);
     dev->flush(dev);
 
     funcs.free(disk);
@@ -444,7 +444,7 @@ int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt) {
     // Validate info
     if (dev->block_count < 10) return PBFS_ERR_Device_Capacity_Too_Small;
     if (dev->block_size < 512) return PBFS_ERR_Device_Block_Size_Too_Small;
-    dev->read_block(dev, 1, &mnt->header);
+    dev->read_block(dev, PBFS_HDR_START_LBA, &mnt->header);
 
     if (!validate_hdr_magic(&mnt->header)) return PBFS_ERR_Invalid_Header;
     if (mnt->header.block_size != dev->block_size) return PBFS_ERR_Header_Unaligned;

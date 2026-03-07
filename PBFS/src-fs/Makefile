@@ -12,7 +12,7 @@ SRCS_WDRIVER :=
 SRCS_NDRIVER := $(SRC_DIR)/pbfs-fs-ndrivers.c
 
 SRCS_UTILS := $(BASE_DIR)/tools/utils.c
-OBJS_UTILS := $(patsubst $(TOOLS_DIR)/%.o,$(BUILD_DIR)/%.c,$(SRCS_UTILS))
+OBJS_UTILS := $(patsubst $(TOOLS_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS_UTILS))
 
 OBJS_WDRIVER := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS_WDRIVER))
 OBJS_NDRIVER := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS_NDRIVER))
@@ -20,7 +20,7 @@ OBJS_NDRIVER := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS_NDRIVER))
 CC := gcc
 AR := ar
 
-CFLAGS := -I $(HEADER_DIR) -Wall -Wextra -Werror=implicit-function-declaration -std=gnu11 -pipe -fstack-protector-strong -g -ffreestanding
+CFLAGS := -I $(HEADER_DIR) -fno-stack-protector -Wall -Wextra -Werror=implicit-function-declaration -std=gnu11 -pipe -ffreestanding
 ARFLAGS := rcs
 
 LIB_NDRIVERS := $(BIN_DIR)/libpbfs-ndrivers.a

@@ -7,6 +7,10 @@
 #include "pbfs_structs_64.h"
 #include <stdbool.h>
 
+#define PBFS_DEF_BLOCK_SIZE 512
+#define PBFS_HDR_START_LBA 256
+#define PBFS_HDR_START_BYTE (PBFS_DEF_BLOCK_SIZE * 256)
+
 struct pbfs_funcs {
     void* (*malloc)(size_t size);
     void (*free)(void* ptr);
