@@ -1061,3 +1061,31 @@ int pbfs_remove_kernel(struct pbfs_mount* mnt, char* name) {
     }
     return PBFS_RES_SUCCESS;
 }
+
+int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max_out_len) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (out == NULL) return PBFS_ERR_No_Data;
+    if (max_out_len < 1) return PBFS_RES_SUCCESS;
+
+    PBFS_Kernel_Table kt = {0};
+    int ret = pbfs_read(mnt, mnt->header64.kernel_table_lba, sizeof(PBFS_Kernel_Table), &kt);
+    if (ret != PBFS_RES_SUCCESS) return ret;
+    if (kt.entry_count > PBFS_KERNEL_TABLE_ENTRIES) return PBFS_ERR_Kernel_Table_Corrupted;
+
+    uint64_t written_entries = 0;
+    uint64_t ext = 1;
+    while (ext > 0) {
+        size_t entry_count = (max_out_len - written_entries) > kt.entry_count ? kt.entry_count : (max_out_len - written_entries);
+        for (size_t i = 0; i < entry_count; i++) {
+            if (written_entries >= max_out_len) return PBFS_RES_SUCCESS;
+            out[written_entries++] = kt.entries[i];
+        }
+        ext = uint128_to_u64(kt.extender_lba);
+        if (ext > 0) {
+            ret = pbfs_read(mnt, ext, sizeof(PBFS_Kernel_Table), &kt);
+            if (ret != PBFS_RES_SUCCESS) return ret;
+            if (kt.entry_count > PBFS_KERNEL_TABLE_ENTRIES) return PBFS_ERR_Kernel_Table_Corrupted;
+        }
+    }
+    return PBFS_RES_SUCCESS;
+}

@@ -308,3 +308,35 @@ void path_part(char* path, int index, char* out, int out_size) {
     if (out_size > 0)
         out[0] = 0;
 }
+
+void path_join(char* out, char* p1, char* p2, int out_size) {
+    if (out_size < 0) return;
+
+    char tmp[out_size];
+
+    int o = 0;
+    int i = 0;
+
+    while (p1[i] && o < out_size - 1) {
+        tmp[o++] = p1[i++];
+    }
+
+    if (o > 0 && o < out_size - 1) {
+        if (tmp[o - 1] != '/' && p2[0] != '/') {
+            tmp[o++] = '/';
+        }
+    }
+
+    i = 0;
+
+    if (o > 0 && tmp[o-1] == '/' && p2[0] == '/') {
+        i = 1; 
+    }
+
+    while (p2[i] && o < out_size - 1) {
+        tmp[o++] = p2[i++];
+    }
+
+    tmp[o] = 0;
+    path_normalize(tmp, out, out_size);
+}

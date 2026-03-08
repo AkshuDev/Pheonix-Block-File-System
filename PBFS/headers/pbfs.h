@@ -2,31 +2,32 @@
 
 #include "pbfs_structs.h"
 
-uint128_t uint128_from_u32(uint32_t value);
-uint128_t uint128_from_u64(uint64_t value);
-uint32_t uint128_to_u32(uint128_t value);
-uint64_t uint128_to_u64(uint128_t value);
-void uint128_inc(uint128_t* a);
-void uint128_dec(uint128_t* a);
-void uint128_add(uint128_t* result, const uint128_t* a, const uint128_t* b);
-void uint128_sub(uint128_t* result, const uint128_t* a, const uint128_t* b);
-void uint128_mul_u32(uint128_t* result, const uint128_t* a, uint32_t b);
-uint32_t uint128_div_u32(uint128_t* quotient, const uint128_t* dividend, uint32_t divisor);
-int uint128_cmp(const uint128_t* a, const uint128_t* b);
-int uint128_is_zero(const uint128_t* a);
-uint64_t uint128_get_low64(const uint128_t* val);
-int uint128_high64_is_zero(const uint128_t* val);
-void uint128_inc_by(uint128_t* val, uint16_t count);
+uint128_t uint128_from_u32(uint32_t value) __attribute__((used));
+uint128_t uint128_from_u64(uint64_t value) __attribute__((used));
+uint32_t uint128_to_u32(uint128_t value) __attribute__((used));
+uint64_t uint128_to_u64(uint128_t value) __attribute__((used));
+void uint128_inc(uint128_t* a) __attribute__((used));
+void uint128_dec(uint128_t* a) __attribute__((used));
+void uint128_add(uint128_t* result, const uint128_t* a, const uint128_t* b) __attribute__((used));
+void uint128_sub(uint128_t* result, const uint128_t* a, const uint128_t* b) __attribute__((used));
+void uint128_mul_u32(uint128_t* result, const uint128_t* a, uint32_t b) __attribute__((used));
+uint32_t uint128_div_u32(uint128_t* quotient, const uint128_t* dividend, uint32_t divisor) __attribute__((used));
+int uint128_cmp(const uint128_t* a, const uint128_t* b) __attribute__((used));
+int uint128_is_zero(const uint128_t* a) __attribute__((used));
+uint64_t uint128_get_low64(const uint128_t* val) __attribute__((used));
+int uint128_high64_is_zero(const uint128_t* val) __attribute__((used));
+void uint128_inc_by(uint128_t* val, uint16_t count) __attribute__((used));
 
-void bitmap_bit_set(uint8_t* bitmap, uint64_t bit_index);
-void bitmap_bit_clear(uint8_t* bitmap, uint64_t bit_index);
-int bitmap_bit_test(uint8_t* bitmap, uint64_t bit_index);
-int is_lba_in_current_bitmap(uint128_t lba, uint128_t bitmap_index);
+void bitmap_bit_set(uint8_t* bitmap, uint64_t bit_index) __attribute__((used));
+void bitmap_bit_clear(uint8_t* bitmap, uint64_t bit_index) __attribute__((used));
+int bitmap_bit_test(uint8_t* bitmap, uint64_t bit_index) __attribute__((used));
+int is_lba_in_current_bitmap(uint128_t lba, uint128_t bitmap_index) __attribute__((used));
 
-void path_normalize(char* path, char* out, int out_size);
-void path_dirname(char* path, char* out, int out_size);
-void path_basename(char* path, char* out, int out_size);
-void path_part(char* path, int index, char* out, int out_size);
+void path_normalize(char* path, char* out, int out_size) __attribute__((used));
+void path_dirname(char* path, char* out, int out_size) __attribute__((used));
+void path_basename(char* path, char* out, int out_size) __attribute__((used));
+void path_part(char* path, int index, char* out, int out_size) __attribute__((used));
+void path_join(char* out, char* p1, char* p2, int out_size) __attribute__((used));
 
 static const uint128_t zero128 = {{0, 0, 0, 0}};
 
