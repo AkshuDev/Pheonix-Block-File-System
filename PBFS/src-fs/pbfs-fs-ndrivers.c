@@ -1062,7 +1062,7 @@ int pbfs_remove_kernel(struct pbfs_mount* mnt, char* name) {
     return PBFS_RES_SUCCESS;
 }
 
-int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max_out_len) {
+int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max_out_len, size_t* out_len) {
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (out == NULL) return PBFS_ERR_No_Data;
     if (max_out_len < 1) return PBFS_RES_SUCCESS;
@@ -1077,7 +1077,7 @@ int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max
     while (ext > 0) {
         size_t entry_count = (max_out_len - written_entries) > kt.entry_count ? kt.entry_count : (max_out_len - written_entries);
         for (size_t i = 0; i < entry_count; i++) {
-            if (written_entries >= max_out_len) return PBFS_RES_SUCCESS;
+            if (written_entries >= max_out_len) {*out_len = written_entries; return PBFS_RES_SUCCESS;}
             out[written_entries++] = kt.entries[i];
         }
         ext = uint128_to_u64(kt.extender_lba);
@@ -1087,5 +1087,6 @@ int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max
             if (kt.entry_count > PBFS_KERNEL_TABLE_ENTRIES) return PBFS_ERR_Kernel_Table_Corrupted;
         }
     }
+    *out_len = written_entries;
     return PBFS_RES_SUCCESS;
 }
