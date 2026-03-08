@@ -123,6 +123,7 @@ enum PBFS_Result {
     PBFS_ERR_File_Not_Found,
     PBFS_ERR_No_Such_File_Or_Directory,
     PBFS_ERR_Invalid_File_Or_Directory,
+    PBFS_ERR_File_Already_Exists,
 
     PBFS_ERR_Wrong_Type,
     PBFS_ERR_Wrong_Permissions,

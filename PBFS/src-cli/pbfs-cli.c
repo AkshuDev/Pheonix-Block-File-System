@@ -215,20 +215,19 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
         } else {
             uint64_t kto = hdr->kernel_table_lba;
             PBFS_Kernel_Table* kernel_table = (PBFS_Kernel_Table*)disk;
-            uint128_t test_lba = uint128_from_u32(1);
 
             printf("\n=== Kernel Table ===\n");
             while (kto > 1) {
                 fseek(f, kto * hdr->block_size, SEEK_SET);
                 fread(disk, hdr->block_size, 1, f);
 
-                for (int i = 0; i < PBFS_KERNEL_TABLE_ENTRIES; i++) {
+                for (int i = 0; i < kernel_table->entry_count; i++) {
                     PBFS_Kernel_Entry* entry = &kernel_table->entries[i];
-                    if (UINT128_NEQ(entry->lba, test_lba))
+                    if (uint128_is_zero(&entry->count))
                         continue;
                     printf(
                         "== Kernel Entry (%d) ==\n"
-                        "\tName: %.64s"
+                        "\tName: %.64s\n"
                         "\tLBA: %lld\n"
                         "\tCount: %lld\n",
                         i, entry->name,
@@ -899,7 +898,7 @@ int main(int argc, char** argv) {
             }
             char* filepath = argv[i + 1];
             i++;
-            char* name_path = argv[i + 2];
+            char* name_path = argv[i + 1];
             i++;
             printf("Adding Kernel [%s]...\n", name_path);
 
@@ -922,7 +921,7 @@ int main(int argc, char** argv) {
             fread(data, 1, data_size, f);
             fclose(f);
 
-            int out = pbfs_add_kernel(&mnt, filepath, data, data_size);
+            int out = pbfs_add_kernel(&mnt, name_path, data, data_size);
             if (out != PBFS_RES_SUCCESS) {
                 fprintf(stderr, "An Error Occurred!\n");
                 free(data);

@@ -429,7 +429,7 @@ static int remove_kernel_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur
             }
             kt.entry_count--;
 
-            // Write updated DMM block
+            // Write updated KT block
             return pbfs_write(mnt, current_lba, sizeof(PBFS_Kernel_Table), &kt);
         }
 
@@ -513,12 +513,12 @@ int pbfs_init(struct pbfs_funcs* functions) {
 }
 
 int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint8_t boot_part_size, uint64_t volume_id) {
-    uint8_t bitmap_lba = 1 + PBFS_HDR_START_LBA;
-    uint8_t dmm_lba = 2 + PBFS_HDR_START_LBA;
-    uint8_t sysinfo_lba = 3 + PBFS_HDR_START_LBA;
-    uint8_t data_lba = 4 + PBFS_HDR_START_LBA;
-    uint8_t kernel_table_lba = 0;
-    uint8_t boot_part_lba = 0;
+    uint64_t bitmap_lba = 1 + PBFS_HDR_START_LBA;
+    uint64_t dmm_lba = 2 + PBFS_HDR_START_LBA;
+    uint64_t sysinfo_lba = 3 + PBFS_HDR_START_LBA;
+    uint64_t data_lba = 4 + PBFS_HDR_START_LBA;
+    uint64_t kernel_table_lba = 0;
+    uint64_t boot_part_lba = 0;
 
     if (reserve_kernel_table == 1) {
         kernel_table_lba = 1 + PBFS_HDR_START_LBA;
@@ -696,6 +696,10 @@ int pbfs_add(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBF
     if (permissions == PERM_INVALID) return PBFS_ERR_Wrong_Permissions;
     if (data_size < 1) return PBFS_ERR_No_Data;
     if (data == NULL) return PBFS_ERR_No_Data;
+
+    PBFS_DMM_Entry tmp = {0};
+    uint64_t tmp_lba = 0;
+    if (find_dmm_entry(path, &tmp, &tmp_lba, mnt) == PBFS_RES_SUCCESS) return PBFS_ERR_File_Already_Exists;
 
     uint64_t required_blocks = ALIGN_UP(data_size, mnt->header64.block_size) / mnt->header64.block_size;
     
@@ -991,6 +995,10 @@ int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, uint8_t* data, siz
     if (strlen(name) < 1) return PBFS_ERR_Invalid_Path;
     if (data_size < 1) return PBFS_ERR_No_Data;
     if (data == NULL) return PBFS_ERR_No_Data;
+
+    PBFS_Kernel_Entry tmp = {0};
+    uint64_t tmp_lba = 0;
+    if (find_kernel_entry(name, &tmp, &tmp_lba, mnt) == PBFS_RES_SUCCESS) return PBFS_ERR_File_Already_Exists;
 
     uint64_t required_blocks = ALIGN_UP(data_size, mnt->header64.block_size) / mnt->header64.block_size;
     uint64_t blocks = bitmap_find_blocks(&mnt->root_bitmap64, mnt->header64.bitmap_lba, required_blocks, mnt);
