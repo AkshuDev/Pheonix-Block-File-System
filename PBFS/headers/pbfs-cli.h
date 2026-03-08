@@ -33,7 +33,8 @@
 "\t-btl/--bootloader <filepath>: Adds a bootloader to the image (MBR).\n" \
 "\t-btp/--boot_partition <Number of Blocks>: Adds a Boot partition of specified Block Size.\n" \
 "\t-rkt/--reserve_kernel_table: Reserves a Kernel Table Block (Extendable).\n" \
-"\t-k/--kernel <path>: Adds a kernel with minimal metadata to the kernel table if found.\n" \
+"\t-k/--kernel <path>: Adds a kernel to the kernel table if found.\n" \
+"\t-rk/--remove_kernel <path>: Removes a kernel from the kernel table.\n" \
 "\t-t/--test: Tests and shows information about the disk.\n" \
 "\t-l/--list <path>: Lists a dir or shows file path if file exists.\n" \
 "\t-rf/--read_file <path>: Reads a file from within the image.\n" \

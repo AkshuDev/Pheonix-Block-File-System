@@ -7,7 +7,7 @@
 #define PBFS_BITMAP_LIMIT 496
 #define PBFS_DISK_NAME_LEN 32
 
-#define PBFS_KERNEL_TABLE_ENTRIES 6
+#define PBFS_KERNEL_TABLE_ENTRIES 5
 #define PBFS_DMM_ENTRIES 4
 
 #define PBFS_MAX_BITMAP_CHAIN 50
@@ -47,6 +47,7 @@ typedef struct {
 typedef struct {
     char name[64];
     uint128_t lba;
+    uint128_t count;
 } PBFS_Kernel_Entry __attribute__((packed));
 
 typedef struct {

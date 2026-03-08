@@ -98,6 +98,10 @@ int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__(
 int pbfs_move(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used));
 int pbfs_rename(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used));
 int pbfs_find_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, struct pbfs_mount* mnt) __attribute__((used));
+int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, uint8_t* data, size_t data_size) __attribute__((used));
+int pbfs_find_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Entry* kernel_e) __attribute__((used));
+int pbfs_get_kernel(struct pbfs_mount* mnt, PBFS_Kernel_Entry* kernel_e, uint8_t** data, size_t* data_size) __attribute__((used));
+int pbfs_remove_kernel(struct pbfs_mount* mnt, char* name) __attribute__((used));
 #endif
 
 enum PBFS_Result {
@@ -124,6 +128,7 @@ enum PBFS_Result {
     PBFS_ERR_Wrong_Permissions,
 
     PBFS_ERR_Data_Unaligned,
+    PBFS_ERR_No_Data,
 
     PBFS_ERR_No_Space_Left,
 

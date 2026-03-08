@@ -210,12 +210,7 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
     }
 
     if (debug == 1) {
-        if (hdr->boot_partition_lba <= 1) {
-            printf("Info: No Boot Partition Found\n");
-        } else {
-            printf("\n=== Boot Partiton ===\nSize (In Blocks): %lld\n", (unsigned long long int)(hdr->data_start_lba - hdr->boot_partition_lba));
-        } 
-        if (hdr->kernel_table_lba <= 1) {
+        if (hdr->kernel_table_lba < 1) {
             printf("Info: No Kernel Table Found\n");
         } else {
             uint64_t kto = hdr->kernel_table_lba;
@@ -234,9 +229,11 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
                     printf(
                         "== Kernel Entry (%d) ==\n"
                         "\tName: %.64s"
-                        "\tLBA: %lld\n",
+                        "\tLBA: %lld\n"
+                        "\tCount: %lld\n",
                         i, entry->name,
-                        (unsigned long long int)uint128_to_u64(entry->lba)
+                        (unsigned long long int)uint128_to_u64(entry->lba),
+                        (unsigned long long int)uint128_to_u64(entry->count)
                     );
                 }
 
@@ -244,6 +241,7 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
             }
         }
 
+        printf("=== Data ===\n");
         pbfs_list_dir(mnt, "/");
         // FILE* f = fopen(image, "rb");
         // if (!f) {
@@ -320,10 +318,21 @@ int main(int argc, char** argv) {
 
     char* image = argv[1];
 
-    FILE* fp = fopen(image, "rb+");
-    if (!fp) {
-        perror("Failed to open image!\n");
-        return PBFS_ERR_UNKNOWN;
+    FILE* fp = NULL;
+
+    if (access(image, F_OK) == 0) {
+        fp = fopen(image, "rb+");
+        if (!fp) {
+            perror("Failed to open image!\n");
+            return PBFS_ERR_UNKNOWN;
+        }
+    } else {
+        printf("Image doesn't exist, creating...\n");
+        fp = fopen(image, "wb+");
+        if (!fp) {
+            perror("Failed to open image!\n");
+            return PBFS_ERR_UNKNOWN;
+        }
     }
 
     struct pbfs_mount mnt = {0};
@@ -389,6 +398,10 @@ int main(int argc, char** argv) {
             i++;
         } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--format") == 0) {
             printf("Formating Image...\n");
+            printf(
+                "Block Size: %u\nTotal Blocks: %llu\nDisk Name: %s\nReserve Kernel Table: %s\nBoot Parition Size: %u\n",
+                block_dev.block_size, block_dev.block_count, block_dev.name, kerneltable == 1 ? "True" : "False", bootpart == 1 ? bootpartsize : 0
+            );
             int out = pbfs_format(&block_dev, kerneltable, bootpartsize, volume_id);
 
             if (out != PBFS_RES_SUCCESS) {
@@ -403,8 +416,19 @@ int main(int argc, char** argv) {
             return EXIT_SUCCESS;
         } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--create") == 0) {
             printf("Creating Image...\n");
-            fclose(fp);
-            return EXIT_SUCCESS;
+            char* disk = (char*)malloc(block_dev.block_size);
+            if (!disk) {
+                perror("Allocation Failed!\n");
+                fclose(fp);
+                return AllocFailed;
+            }
+            memset(disk, 0, block_dev.block_size);
+            fseek(fp, 0, SEEK_SET);
+            for (uint64_t i = 0; i < block_dev.block_count; i++) {
+                fwrite(disk, block_dev.block_size, 1, fp);
+            }
+            fseek(fp, 0, SEEK_SET);
+            free(disk);
             printf("Done!\n");
         } else if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--add") == 0) {
             // Add a file
@@ -710,14 +734,6 @@ int main(int argc, char** argv) {
             i++;
         } else if (strcmp(argv[i], "-rkt") == 0 || strcmp(argv[i], "--reserve_kernel_table") == 0) {
             kerneltable = 1;
-        } else if (strcmp(argv[i], "-k") == 0 || strcmp(argv[i], "--kernel") == 0) {
-            if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
-                fclose(fp);
-                return InvalidUsage;
-            }
-            char* filepath = argv[i + 1];
-            i++;
         } else if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--test") == 0) {
             if (mnt.active != true) {
                 if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
@@ -788,7 +804,6 @@ int main(int argc, char** argv) {
                 return out;
             }
             printf("Done!\n");
-            i++; // skip to_path
         } else if (strcmp(argv[i], "-mv") == 0 || strcmp(argv[i], "--move") == 0) {
             if (mnt.active != true) {
                 if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
@@ -815,7 +830,6 @@ int main(int argc, char** argv) {
                 return out;
             }
             printf("Done!\n");
-            i++; // skip to_path
         } else if (strcmp(argv[i], "-rn") == 0 || strcmp(argv[i], "--rename") == 0) {
             if (mnt.active != true) {
                 if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
@@ -842,6 +856,80 @@ int main(int argc, char** argv) {
                 fclose(fp);
                 return out;
             }
+            printf("Done!\n");
+        } else if (strcmp(argv[i], "-rk") == 0 || strcmp(argv[i], "--remove_kernel") == 0) {
+            if (mnt.active != true) {
+                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount!\n");
+                    fclose(fp);
+                    fclose(fp);
+                    return PBFS_ERR_UNKNOWN;
+                }
+            }
+            
+            if (i + 2 > argc) {
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <path>\n", argv[i]);
+                fclose(fp);
+                return InvalidUsage;
+            }
+            char* filepath = argv[i + 1];
+            i++;
+            printf("Removing Kernel [%s]...\n", filepath);
+            int out = pbfs_remove_kernel(&mnt, filepath);
+            if (out != PBFS_RES_SUCCESS) {
+                fprintf(stderr, "An Error Occurred!\n");
+                fclose(fp);
+                return out;
+            }
+            printf("Done!\n");
+        } else if (strcmp(argv[i], "-k") == 0 || strcmp(argv[i], "--kernel") == 0) {
+            if (mnt.active != true) {
+                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount!\n");
+                    fclose(fp);
+                    fclose(fp);
+                    return PBFS_ERR_UNKNOWN;
+                }
+            }
+            
+            if (i + 3 > argc) {
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <file> <path>\n", argv[i]);
+                fclose(fp);
+                return InvalidUsage;
+            }
+            char* filepath = argv[i + 1];
+            i++;
+            char* name_path = argv[i + 2];
+            i++;
+            printf("Adding Kernel [%s]...\n", name_path);
+
+            FILE* f = fopen(filepath, "rb");
+            if (!f) {
+                perror("Failed to open file!\n");
+                fclose(fp);
+                return PBFS_ERR_UNKNOWN;
+            }
+            fseek(f, 0, SEEK_END);
+            uint64_t data_size = ftell(f);
+            rewind(f);
+            uint8_t* data = (uint8_t*)malloc(data_size);
+            if (!data) {
+                perror("Failed to allocate memory!\n");
+                fclose(fp);
+                fclose(f);
+                return PBFS_ERR_UNKNOWN;
+            }
+            fread(data, 1, data_size, f);
+            fclose(f);
+
+            int out = pbfs_add_kernel(&mnt, filepath, data, data_size);
+            if (out != PBFS_RES_SUCCESS) {
+                fprintf(stderr, "An Error Occurred!\n");
+                free(data);
+                fclose(fp);
+                return out;
+            }
+            free(data);
             printf("Done!\n");
             i++; // skip new_name
         } else {

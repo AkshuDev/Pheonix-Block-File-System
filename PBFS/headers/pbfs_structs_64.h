@@ -29,6 +29,7 @@ typedef struct {
 typedef struct {
     char name[64];
     uint64_t lba;
+    uint64_t count;
 } PBFS_Kernel_Entry64 __attribute__((packed));
 
 typedef struct {
