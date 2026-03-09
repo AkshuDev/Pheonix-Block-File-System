@@ -1,6 +1,8 @@
 #pragma once
 
-#include <pefi.h>
+#include "pefi.h"
+#include "pefi_bootservices.h"
+#include "pefi_types.h"
 
 #define PEFI_VERSION 1
 #define PEFI_ALREADY_INITIALIZED 100

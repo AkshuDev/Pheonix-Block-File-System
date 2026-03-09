@@ -176,12 +176,13 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
         "Block Size: %d\nTotal Blocks: %lld\n"
         "Disk Name: %s\nVolume ID: %lld\n"
         "DMM Root LBA: %lld\nBitmap Root LBA: %lld\n"
-        "Kernel Table Root LBA: %lld\nBoot Partition LBA: %lld\n"
-        "Data LBA: %lld\n",
+        "Kernel Table Root LBA: %lld\nData LBA: %lld\n"
+        "Boot Partition LBA: %lld\nBoot Partition Size: %lld",
         hdr->magic,
         (unsigned int)hdr->block_size, (unsigned long long int)uint128_to_u64(hdr->total_blocks),
         (char*)hdr->disk_name, (unsigned long long int)uint128_to_u64(hdr->volume_id),
-        hdr->dmm_root_lba, hdr->bitmap_lba, hdr->kernel_table_lba, hdr->boot_partition_lba, hdr->data_start_lba
+        hdr->dmm_root_lba, hdr->bitmap_lba, hdr->kernel_table_lba, hdr->data_start_lba,
+        hdr->boot_partition_lba, hdr->boot_partition_size
     );
 
     if (hdr->bitmap_lba <= 1) {
@@ -299,7 +300,9 @@ int main(int argc, char** argv) {
 
     uint8_t bootpart = 0;
     int bootpartsize = 0;
+    uint64_t bootpartlba = 0;
     uint8_t kerneltable = 0;
+    uint8_t boot_partition_type = PBFS_BOOT_PART_TYPE_NONE;
 
     uint64_t volume_id = 0;
     char disk_name[32];
@@ -395,13 +398,17 @@ int main(int argc, char** argv) {
             }
             volume_id = (uint64_t)atoll(argv[i + 1]);
             i++;
+        } else if (strcmp(argv[i], "-mbr") == 0 || strcmp(argv[i], "--mbr") == 0) {
+            boot_partition_type = PBFS_BOOT_PART_TYPE_MBR;
+        } else if (strcmp(argv[i], "-gpt") == 0 || strcmp(argv[i], "--gpt") == 0) {
+            boot_partition_type = PBFS_BOOT_PART_TYPE_GPT;
         } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--format") == 0) {
             printf("Formating Image...\n");
             printf(
                 "Block Size: %u\nTotal Blocks: %llu\nDisk Name: %s\nReserve Kernel Table: %s\nBoot Parition Size: %u\n",
                 block_dev.block_size, block_dev.block_count, block_dev.name, kerneltable == 1 ? "True" : "False", bootpart == 1 ? bootpartsize : 0
             );
-            int out = pbfs_format(&block_dev, kerneltable, bootpartsize, volume_id);
+            int out = pbfs_format(&block_dev, kerneltable, bootpartlba, bootpartsize, volume_id);
 
             if (out != PBFS_RES_SUCCESS) {
                 fprintf(stderr, "An Error Occurred!\n");
@@ -722,13 +729,58 @@ int main(int argc, char** argv) {
             }
             char* filepath = argv[i + 1];
             i++;
-        } else if (strcmp(argv[i], "-btp") == 0 || strcmp(argv[i], "--boot_partition") == 0) {
-            if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <blocks>\n", argv[i]);
+            printf("Adding File [%s] to Image as %s bootloader...\n", filepath, boot_partition_type == PBFS_BOOT_PART_TYPE_MBR ? "MBR" : boot_partition_type == PBFS_BOOT_PART_TYPE_GPT ? "GPT" : "RAW");
+            FILE* f = fopen(filepath, "rb");
+            if (!f) {
+                perror("Failed to open file!\n");
+                fclose(fp);
+                return PBFS_ERR_UNKNOWN;
+            }
+            fseek(f, 0, SEEK_END);
+            uint64_t data_size = ftell(f);
+            uint64_t data_size_aligned = data_size < 512 ? 512 : data_size;
+            rewind(f);
+            uint8_t* data = (uint8_t*)malloc(data_size_aligned);
+            if (!data) {
+                perror("Failed to allocate memory!\n");
+                fclose(fp);
+                fclose(f);
+                return PBFS_ERR_UNKNOWN;
+            }
+            fread(data, 1, data_size, f);
+            fclose(f);
+
+            if (boot_partition_type == PBFS_BOOT_PART_TYPE_NONE) {
+                fseek(fp, 0, SEEK_SET);
+                fwrite(data, data_size_aligned, 1, fp);
+                free(data);
+            } else {
+                int out = pbfs_add_bootloader(&mnt, data, data_size_aligned, boot_partition_type);
+                free(data);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "An Error Occurred!\n");
+                    fclose(fp);
+                    return out;
+                }
+                printf("Done!\n");
+            }
+        } else if (strcmp(argv[i], "-rbp") == 0 || strcmp(argv[i], "--reserve_boot_partition") == 0) {
+            if (i + 3 > argc) {
+                printf("Usage: pbfs-cli <image> %s <start lba (4096 aligned)> <blocks>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
-            bootpartsize = (int)atoi(argv[i + 1]);
+            bootpartlba = (uint64_t)atoll(argv[i + 1]);
+            bootpartsize = (int)atoi(argv[i + 2]);
+            if (bootpartsize > block_dev.block_count) {
+                fprintf(stderr, "Bootloader Parition not in disk space?\n");
+                fclose(fp);
+                return InvalidUsage;
+            } else if (bootpartsize < 1) {
+                fprintf(stderr, "Bootloader Parition cannot be at LBA 0!\n");
+                fclose(fp);
+                return InvalidUsage;
+            }
             bootpart = 1;
             i++;
         } else if (strcmp(argv[i], "-rkt") == 0 || strcmp(argv[i], "--reserve_kernel_table") == 0) {

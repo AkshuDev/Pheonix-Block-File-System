@@ -1,0 +1,204 @@
+[
+  {
+    "file": "pbfs-cli.c",
+    "arguments": [
+      "gcc",
+      "-I../headers",
+      "-Wall",
+      "-g",
+      "-w",
+      "-o",
+      "../build-cli/pbfs-cli",
+      "pbfs-cli.c"
+    ],
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/src-cli",
+    "output": "../build-cli/pbfs-cli"
+  },
+  {
+    "file": "../tools/utils.c",
+    "arguments": [
+      "gcc",
+      "-I../headers",
+      "-Wall",
+      "-g",
+      "-w",
+      "-o",
+      "../build-cli/pbfs-cli",
+      "../tools/utils.c"
+    ],
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/src-cli",
+    "output": "../build-cli/pbfs-cli"
+  },
+  {
+    "file": "../src-fs/pbfs-fs-ndrivers.c",
+    "arguments": [
+      "gcc",
+      "-I../headers",
+      "-Wall",
+      "-g",
+      "-w",
+      "-o",
+      "../build-cli/pbfs-cli",
+      "../src-fs/pbfs-fs-ndrivers.c"
+    ],
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/src-cli",
+    "output": "../build-cli/pbfs-cli"
+  },
+  {
+    "file": "pbfs-fs-ndrivers.c",
+    "arguments": [
+      "gcc",
+      "-I",
+      "../headers",
+      "-fno-stack-protector",
+      "-Wall",
+      "-Wextra",
+      "-Werror=implicit-function-declaration",
+      "-std=gnu11",
+      "-pipe",
+      "-ffreestanding",
+      "-c",
+      "pbfs-fs-ndrivers.c",
+      "-o",
+      "../build-fs/objs/pbfs-fs-ndrivers.o"
+    ],
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/src-fs",
+    "output": "../build-fs/objs/pbfs-fs-ndrivers.o"
+  },
+  {
+    "file": "../tools/utils.c",
+    "arguments": [
+      "gcc",
+      "-I",
+      "../headers",
+      "-fno-stack-protector",
+      "-Wall",
+      "-Wextra",
+      "-Werror=implicit-function-declaration",
+      "-std=gnu11",
+      "-pipe",
+      "-ffreestanding",
+      "-c",
+      "../tools/utils.c",
+      "-o",
+      "../build-fs/objs/utils.o"
+    ],
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/src-fs",
+    "output": "../build-fs/objs/utils.o"
+  },
+  {
+    "file": "src/efi_disk.c",
+    "arguments": [
+      "gcc",
+      "-DBUILD_LIB",
+      "-w",
+      "-c",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-mno-red-zone",
+      "-Wall",
+      "-Wextra",
+      "-std=c11",
+      "-Iincludes",
+      "-m64",
+      "-mno-red-zone",
+      "src/efi_disk.c",
+      "-o",
+      "build/efi_disk.o"
+    ],
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/PEFI",
+    "output": "build/efi_disk.o"
+  },
+  {
+    "file": "src/efi_graphics.c",
+    "arguments": [
+      "gcc",
+      "-DBUILD_LIB",
+      "-w",
+      "-c",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-mno-red-zone",
+      "-Wall",
+      "-Wextra",
+      "-std=c11",
+      "-Iincludes",
+      "-m64",
+      "-mno-red-zone",
+      "src/efi_graphics.c",
+      "-o",
+      "build/efi_graphics.o"
+    ],
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/PEFI",
+    "output": "build/efi_graphics.o"
+  },
+  {
+    "file": "src/efi_init.c",
+    "arguments": [
+      "gcc",
+      "-DBUILD_LIB",
+      "-w",
+      "-c",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-mno-red-zone",
+      "-Wall",
+      "-Wextra",
+      "-std=c11",
+      "-Iincludes",
+      "-m64",
+      "-mno-red-zone",
+      "src/efi_init.c",
+      "-o",
+      "build/efi_init.o"
+    ],
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/PEFI",
+    "output": "build/efi_init.o"
+  },
+  {
+    "file": "src/efi_memory.c",
+    "arguments": [
+      "gcc",
+      "-DBUILD_LIB",
+      "-w",
+      "-c",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-mno-red-zone",
+      "-Wall",
+      "-Wextra",
+      "-std=c11",
+      "-Iincludes",
+      "-m64",
+      "-mno-red-zone",
+      "src/efi_memory.c",
+      "-o",
+      "build/efi_memory.o"
+    ],
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/PEFI",
+    "output": "build/efi_memory.o"
+  },
+  {
+    "file": "src/main.c",
+    "arguments": [
+      "gcc",
+      "-DBUILD_LIB",
+      "-w",
+      "-c",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-mno-red-zone",
+      "-Wall",
+      "-Wextra",
+      "-std=c11",
+      "-Iincludes",
+      "-m64",
+      "-mno-red-zone",
+      "src/main.c",
+      "-o",
+      "build/main.o"
+    ],
+    "directory": "/home/AkshuDev/Projects/PBFS/PBFS/PEFI",
+    "output": "build/main.o"
+  }
+]

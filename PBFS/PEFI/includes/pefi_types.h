@@ -1,34 +1,25 @@
 #pragma once
 
 /* UEFI typedefs */
-#include <pefi.h>
-
-/* UEFI Table Header */
-PEFI_PACKED_STRUCT(typedef struct {
-    UINT64 Signature; // 8 bytes
-    UINT32 Revision; // 4 bytes
-    UINT32 HeaderSize; // 4 bytes
-    UINT32 CRC32; // 4 bytes
-    UINT32 Reserved; // 4 bytes
-} EFI_TABLE_HEADER;) // 24 bytes
+#include "pefi.h"
 
 /* UEFI Runtime Services*/
-#include <pefi_runtime.h>
+#include "pefi_runtime.h"
 
 /* Console Output Protocol */
-#include <pefi_simple_text_out.h>
+#include "pefi_simple_text_out.h"
 
 /* Boot Services */
-#include <pefi_bootservices.h>
+#include "pefi_bootservices.h"
 extern EFI_BOOT_SERVICES *gBS;
 extern EFI_GUID gEfiBlockIoProtocolGuid;
 
 /* Media */
-#include <pefi_media.h>
+#include "pefi_media.h"
 
 /* Block IO */
-#include <pefi_block_io.h>
-#include <pefi_block_io2.h>
+#include "pefi_block_io.h"
+#include "pefi_block_io2.h"
 
 /* UEFI System Table */
 typedef struct EFI_SIMPLE_TEXT_INPUT_PROTOCOL EFI_SIMPLE_TEXT_INPUT;

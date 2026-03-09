@@ -8,8 +8,12 @@
 #include <stdbool.h>
 
 #define PBFS_DEF_BLOCK_SIZE 512
-#define PBFS_HDR_START_LBA 256
-#define PBFS_HDR_START_BYTE (PBFS_DEF_BLOCK_SIZE * 256)
+#define PBFS_HDR_START_LBA 512
+#define PBFS_HDR_START_BYTE (PBFS_DEF_BLOCK_SIZE * PBFS_HDR_START_LBA)
+
+#define PBFS_BOOT_PART_TYPE_NONE (1 << 0)
+#define PBFS_BOOT_PART_TYPE_MBR (1 << 1)
+#define PBFS_BOOT_PART_TYPE_GPT (1 << 3)
 
 struct pbfs_funcs {
     void* (*malloc)(size_t size);
@@ -81,7 +85,7 @@ struct pbfs_mount {
 
 
 int pbfs_init(struct pbfs_funcs* functions) __attribute__((used));
-int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint8_t boot_part_size, uint64_t volume_id) __attribute__((used));
+int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t boot_part_lba, uint8_t boot_part_size, uint64_t volume_id) __attribute__((used));
 int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt) __attribute__((used));
 int pbfs_read_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute__((used));
 int pbfs_write_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute__((used));
@@ -103,6 +107,7 @@ int pbfs_find_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Entry
 int pbfs_get_kernel(struct pbfs_mount* mnt, PBFS_Kernel_Entry* kernel_e, uint8_t** data, size_t* data_size) __attribute__((used));
 int pbfs_remove_kernel(struct pbfs_mount* mnt, char* name) __attribute__((used));
 int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max_out_len, size_t* out_len) __attribute__((used));
+int pbfs_add_bootloader(struct pbfs_mount* mnt, uint8_t* data, size_t data_size, uint8_t boot_part_type) __attribute__((used));
 #endif
 
 enum PBFS_Result {
@@ -111,6 +116,9 @@ enum PBFS_Result {
 
     PBFS_ERR_Device_Capacity_Too_Small,
     PBFS_ERR_Device_Block_Size_Too_Small,
+    
+    PBFS_ERR_Bootloader_Partition_Too_Small,
+    PBFS_ERR_No_Bootloader_Partition,
 
     PBFS_ERR_No_Header_Present,
     PBFS_ERR_Invalid_Header,
@@ -131,6 +139,7 @@ enum PBFS_Result {
 
     PBFS_ERR_Data_Unaligned,
     PBFS_ERR_No_Data,
+    PBFS_ERR_Argument_Invalid,
 
     PBFS_ERR_No_Space_Left,
 

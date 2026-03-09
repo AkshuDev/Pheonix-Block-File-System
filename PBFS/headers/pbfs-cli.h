@@ -30,8 +30,8 @@
 "\t-mv/--move <from path> <to path>: Moves a file from one path to another.\n" \
 "\t-r/--remove <file>: Removes the provided file from the image. (use --name for the file name or file path will be used)\n" \
 "\t-u/--update <filepath>: Updates a file on the image. (use --name for the file name or file path will be used)\n" \
-"\t-btl/--bootloader <filepath>: Adds a bootloader to the image (MBR).\n" \
-"\t-btp/--boot_partition <Number of Blocks>: Adds a Boot partition of specified Block Size.\n" \
+"\t-btl/--bootloader <filepath>: Adds a bootloader to the image.\n" \
+"\t-rbp/--reserve_boot_partition <Start LBA (Aligned to 4096)> <Number of Blocks>: Reserves the specified number of blocks before the PBFS Header (MAX: 511)\n" \
 "\t-rkt/--reserve_kernel_table: Reserves a Kernel Table Block (Extendable).\n" \
 "\t-k/--kernel <path>: Adds a kernel to the kernel table if found.\n" \
 "\t-rk/--remove_kernel <path>: Removes a kernel from the kernel table.\n" \
@@ -39,4 +39,6 @@
 "\t-l/--list <path>: Lists a dir or shows file path if file exists.\n" \
 "\t-rf/--read_file <path>: Reads a file from within the image.\n" \
 "\t-rfb/--read_file_binary <path>: Reads a file from within the image. (binary)\n" \
+"\t-gpt/--gpt: Adds GPT Headers, NOTE: Requires Bootloader Parition to be atleast 30 blocks (BTL ONLY)" \
+"\t-mbr/--mbr: Adds MBR Parition Headers, NOTE: Requires Bootloader Parition to be atleast 2 blocks (BTL ONLY)" \
 "\t-h/--help: Shows this display message.\n"

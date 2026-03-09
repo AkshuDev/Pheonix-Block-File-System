@@ -38,6 +38,7 @@ TARGET := $(build_dir)/pbfs-cli
 all: $(TARGET)
 
 $(TARGET): $(C_SRCFILES) $(H_SRCFILES)
+	@mkdir -p $(build_dir)
 	$(CC) $(CFLAGS) -o $@ $(C_SRCFILES) $(CFLAGS_LIB)
 
 clean:

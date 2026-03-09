@@ -1,5 +1,5 @@
 #pragma once
-#include <pefi.h>
+#include "pefi.h"
 
 typedef struct EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL;
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <pefi.h>
+#include "pefi.h"
 
 // TPL
 typedef EFI_TPL(EFIAPI* EFI_RAISE_TPL) (IN EFI_TPL NewTpl);

@@ -11,14 +11,14 @@ typedef struct {
     uint64_t sysinfo_lba;
     uint64_t kernel_table_lba;
     uint64_t dmm_root_lba;
-    uint64_t boot_partition_lba; // Size = (data_start_lba - boot_partition_lba) * block_size
+    uint64_t boot_partition_size;
+    uint64_t boot_partition_lba;
     uint64_t data_start_lba;
     
     uint64_t total_blocks;
     uint32_t block_size;
 
     char disk_name[PBFS_DISK_NAME_LEN];
-    uint8_t reserved[6];
 } PBFS_Header64 __attribute__((packed));
 
 typedef struct {

@@ -3,14 +3,7 @@
 #define NULL ((void*)0)
 
 #ifndef CLI
-typedef signed char int8_t;
-typedef signed short int16_t;
-typedef signed int int32_t;
-typedef signed long long int64_t;
-typedef unsigned char uint8_t;
-typedef unsigned short uint16_t;
-typedef unsigned int uint32_t;
-typedef unsigned long long uint64_t;
+#include <stdint.h>
 #endif
 
 typedef uint64_t EFI_STATUS;
@@ -64,7 +57,6 @@ typedef UINTN RETURN_STATUS;
 
 #define FUNCTION_ENTRY_POINT (FunctionPointer)(VOID *)(UINTN)(FunctionPointer)
 
-#define IN
 #define OUT
 #define IN OUT
 #define OPTIONAL
@@ -73,8 +65,6 @@ typedef UINTN RETURN_STATUS;
 
 #define EFI_ERROR(Status) (((INTN)(Status)) < 0)
 #define ENCODE_ERROR	(StatusCode)((RETURN_STATUS)(MAX_BIT | (StatusCode)))
-#define RETURN_ACCESS_DENIED   ENCODE_ERROR (15)
-#define EFI_ACCESS_DENIED   RETURN_ACCESS_DENIED
 
 #ifdef _MSC_VER
   #define PEFI_PACKED_STRUCT(decl) __pragma(pack(push, 1)) decl __pragma(pack(pop))
@@ -198,6 +188,14 @@ typedef struct {
     VOID *VendorTable;   // 8 bytes
 } EFI_CONFIGURATION_TABLE;
 
+/* UEFI Table Header */
+PEFI_PACKED_STRUCT(typedef struct {
+    UINT64 Signature; // 8 bytes
+    UINT32 Revision; // 4 bytes
+    UINT32 HeaderSize; // 4 bytes
+    UINT32 CRC32; // 4 bytes
+    UINT32 Reserved; // 4 bytes
+} EFI_TABLE_HEADER;) // 24 bytes
 
 typedef VOID* EFI_EVENT;
 typedef VOID (EFIAPI *EFI_EVENT_NOTIFY) (IN EFI_EVENT Event, IN VOID *Context);

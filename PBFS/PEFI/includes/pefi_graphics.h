@@ -1,21 +1,7 @@
 #pragma once
 
 // LIB
-#ifdef _WIN32
-// DLL MODE
-#ifdef BUILD_LIB
-#define LIB __declspec(dllexport)
-#else
-#define LIB __declspec(dllimport)
-#endif
-#else
-// .SO MODE
-#ifdef BUILD_LIB
-#define LIB __attribute__((visibility("default")))
-#else
 #define LIB
-#endif
-#endif
 
 #include "pefi_types.h"
 #include "pefi.h"
@@ -34,9 +20,9 @@ extern "C" {
 // efi_graphics
 LIB extern EFI_GUID EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
 LIB extern EFI_GRAPHICS_OUTPUT_PROTOCOL *GOP;
-LIB EFI_STATUS pefi_init_gop(EFI_SYSTEM_TABLE* SystemTable);
-LIB void pefi_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
-LIB void pefi_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
+LIB EFI_STATUS pefi_init_gop(EFI_SYSTEM_TABLE* SystemTable) __attribute__((used));
+LIB void pefi_draw_pixel(uint32_t x, uint32_t y, uint32_t color) __attribute__((used));
+LIB void pefi_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) __attribute__((used));
 
 #ifdef __cplusplus
 }

@@ -10,34 +10,11 @@ SRC_FILES := $(wildcard $(SRC_DIR)/*.c)
 
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRC_FILES))
 
-CFLAGS := -DBUILD_LIB -w -c -fpic -Wall -Wextra -I$(INCLUDE_DIR)
+CFLAGS := -DBUILD_LIB -m64 -w -c -ffreestanding -fno-stack-protector -mno-red-zone -Wall -Wextra -std=c11 -I$(INCLUDE_DIR)
 AR := ar
-CC := gcc
+CC := x86_64-w64-mingw32-gcc
 
-ARCH := $(shell uname -m)
-
-ifeq ($(ARCH), x86_64)
-    CFLAGS += -m64 -mno-red-zone
-endif
-
-# === Platform ===
-
-UNAME_S := $(shell uname -s)
-ifeq ($(OS),Windows_NT)
-    TARGET := $(BUILD_DIR)/pefi.dll
-    LIBFLAGS := -shared -Wl,--out-implib,$(BUILD_DIR)/libpefi.a
-else ifeq ($(findstring MSYS_NT, $(OS)), MSYS_NT)
-	TARGET := $(BUILD_DIR)/pefi.dll
-    LIBFLAGS := -shared -Wl,--out-implib,$(BUILD_DIR)/libpefi.a
-else ifeq ($(findstring MINGW, $(OS)), MINGW)
-	TARGET := $(BUILD_DIR)/pefi.dll
-    LIBFLAGS := -shared -Wl,--out-implib,$(BUILD_DIR)/libpefi.a
-else
-    TARGET := $(BUILD_DIR)/libpefi.so
-    LIBFLAGS := -shared
-    CFLAGS += -fno-stack-protector
-endif
-
+TARGET := $(BUILD_DIR)/libpefi.a
 
 # === Rules ===
 .PHONY: all clean
@@ -47,7 +24,7 @@ all: $(TARGET)
 # Build targets
 # Build Lib
 $(TARGET): $(OBJ_FILES)
-	$(CC) $(LIBFLAGS) -o $@ $(OBJ_FILES)
+	$(AR) rcs $@ $(OBJ_FILES)
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(BUILD_DIR)

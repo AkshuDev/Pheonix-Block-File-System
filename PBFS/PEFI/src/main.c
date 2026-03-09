@@ -1,4 +1,4 @@
-#include "pefi_types.h"
+#include <pefi_types.h>
 #include <pefi_main.h>
 
 LIB void pefi_print(EFI_SYSTEM_TABLE* SystemTable, const uint16_t* str) {
