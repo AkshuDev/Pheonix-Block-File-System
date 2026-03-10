@@ -51,8 +51,6 @@ struct btl_gpt_hdr {
     uint32_t number_of_partition_entries;
     uint32_t size_of_partition_entries;
     uint32_t partition_entry_array_crc32;
-
-    uint8_t reserved2[420];
 } __attribute__((packed));
 
 struct btl_gpt_entry {
@@ -65,8 +63,6 @@ struct btl_gpt_entry {
     uint64_t attributes;
 
     uint16_t partition_name[36];
-    
-    uint8_t reserved[128];
 } __attribute__((packed));
 
 struct guid {
@@ -636,7 +632,7 @@ int pbfs_init(struct pbfs_funcs* functions) {
     return PBFS_RES_SUCCESS;
 }
 
-int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t boot_part_lba, uint8_t boot_part_size, uint64_t volume_id) {
+int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t boot_part_lba, uint64_t boot_part_size, uint64_t volume_id) {
     uint64_t bitmap_lba = 1 + PBFS_HDR_START_LBA;
     uint64_t dmm_lba = 2 + PBFS_HDR_START_LBA;
     uint64_t sysinfo_lba = 3 + PBFS_HDR_START_LBA;
@@ -678,11 +674,9 @@ int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t
     dev->write_block(dev, sysinfo_lba, disk);
     dev->write_block(dev, dmm_lba, disk);
 
-    bitmap_bit_set(disk, PBFS_HDR_START_LBA);
-    bitmap_bit_set(disk, sysinfo_lba);
-    bitmap_bit_set(disk, dmm_lba);
-    bitmap_bit_set(disk, bitmap_lba);
-    if (reserve_kernel_table == 1) bitmap_bit_set(disk, kernel_table_lba);
+    for (int i = 0; i < 34; i++) {
+        bitmap_bit_set(disk, i);
+    }
 
     dev->write_block(dev, bitmap_lba, disk);
 
@@ -707,6 +701,22 @@ int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t
 
     funcs.free(disk);
 
+    struct pbfs_mount mnt = {0}; // Make a fake mount
+    int out = pbfs_mount(dev, &mnt);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    bitmap_set(&mnt.root_bitmap, PBFS_HDR_START_LBA, mnt.header64.bitmap_lba, 0, &mnt, 1);
+    bitmap_set(&mnt.root_bitmap, sysinfo_lba, mnt.header64.bitmap_lba, 0, &mnt, 1);
+    bitmap_set(&mnt.root_bitmap, dmm_lba, mnt.header64.bitmap_lba, 0, &mnt, 1);
+    bitmap_set(&mnt.root_bitmap, bitmap_lba, mnt.header64.bitmap_lba, 0, &mnt, 1);
+    if (reserve_kernel_table == 1) bitmap_set(&mnt.root_bitmap, kernel_table_lba, mnt.header64.bitmap_lba, 0, &mnt, 1);
+    if (boot_part_size > 0) {
+        for (uint64_t i = boot_part_lba; i < boot_part_lba + boot_part_size; i++) {
+            bitmap_set(&mnt.root_bitmap, i, mnt.header64.bitmap_lba, 0, &mnt, 1);
+        }
+    }
+
+    dev->flush(dev);
     return PBFS_RES_SUCCESS;
 }
 
@@ -1231,7 +1241,6 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
     if (data == NULL || data_size < 1) return PBFS_ERR_Argument_Invalid;
 
     if (mnt->header64.boot_partition_size < 1) return PBFS_ERR_No_Bootloader_Partition;
-    if (mnt->header64.boot_partition_size < 2) return PBFS_ERR_Bootloader_Partition_Too_Small;
 
     if (boot_part_type == PBFS_BOOT_PART_TYPE_NONE) {
         char tmp[512];
@@ -1239,6 +1248,8 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
         // Just write data to sector 0
         return pbfs_write(mnt, 0, 512, tmp);
     } else if (boot_part_type == PBFS_BOOT_PART_TYPE_MBR) {
+        if (mnt->header64.boot_partition_size < 2) return PBFS_ERR_Bootloader_Partition_Too_Small;
+
         struct btl_mbr mbr = {0};
         memcpy(mbr.bootstrap_code, data, data_size > 446 ? 446 : data_size);
 
@@ -1252,18 +1263,20 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
 
         return pbfs_write(mnt, 0, sizeof(struct btl_mbr), &mbr);
     } else if (boot_part_type == PBFS_BOOT_PART_TYPE_GPT) {
+        if (mnt->header64.boot_partition_size < 34) return PBFS_ERR_Bootloader_Partition_Too_Small;
+        
         struct btl_mbr pmbr = {0};
+        uint64_t bp_size = mnt->header64.boot_partition_size;
+        uint64_t bp_lba = mnt->header64.boot_partition_lba;
+        uint64_t last_lba = (bp_lba + bp_size) - 1;
         
         struct btl_mbr_parition_entry* pm0 = &pmbr.partition_table[0];
         pm0->bootable_flag = 0x00;
         pm0->partition_type = 0xEE;
-        uint32_t tmp = 0x000200;
-        memcpy(&pm0->start_chs, &tmp, 3);
-        tmp = (mnt->dev->block_count - 1) > 0xFFFFFF ? 0xFFFFFF : (mnt->dev->block_count - 1);
-        memcpy(&pm0->end_chs, &tmp, 3);
-        pm0->start_lba = 0x00000001;
-        tmp = (mnt->dev->block_count - 1) > 0xFFFFFFFF ? 0xFFFFFFFF : (mnt->dev->block_count - 1);
-        pm0->size_sectors = tmp;
+        pm0->start_lba = 1;
+        pm0->size_sectors = (bp_lba + bp_size) - 1 > 0xFFFFFFFF ? 0xFFFFFFFF : (bp_lba + bp_size) - 1;
+
+        pmbr.mbr_signature = 0xAA55;
         
         int out = pbfs_write(mnt, 0, 512, &pmbr);
         if (out != PBFS_RES_SUCCESS) return out;
@@ -1273,23 +1286,27 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
         gpt_hdr.revision = 0x00010000; // 1.0
         gpt_hdr.header_size = sizeof(struct btl_gpt_hdr);
         gpt_hdr.mylba = 1;
-        gpt_hdr.alternate_lba = mnt->dev->block_count - 1; // Last sector
+        gpt_hdr.alternate_lba = last_lba;
         gpt_hdr.first_usable_lba = 34; // After Header (1) + Array (32)
-        gpt_hdr.last_usable_lba = mnt->dev->block_count - 34;
+        gpt_hdr.last_usable_lba = last_lba - 33; // Backup GPT HDR (1) + Backup Array (32)
 
         gpt_hdr.partition_entry_lba = 2;
         gpt_hdr.number_of_partition_entries = 128;
-        gpt_hdr.size_of_partition_entries = 128;
+        gpt_hdr.size_of_partition_entries = sizeof(struct btl_gpt_entry);
 
         struct btl_gpt_entry* entries = funcs.malloc(sizeof(struct btl_gpt_entry) * 128);
         if (!entries) return PBFS_ERR_Allocation_Failed;
+        memset(entries, 0, sizeof(struct btl_gpt_entry) * 128);
 
         const uint8_t efi_system_part_guid[16] = { 0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B };
         memcpy(entries[0].partition_type_guid, efi_system_part_guid, 16);
         generate_guid(entries[0].unique_partition_guid);
 
-        entries[0].starting_lba = mnt->header64.boot_partition_lba;
-        entries[0].ending_lba = (entries[0].starting_lba + mnt->header64.boot_partition_size) - 1;
+        entries[0].starting_lba = bp_lba;
+        entries[0].ending_lba = (bp_lba + (data_size / 512)) - 1;
+        if (entries[0].ending_lba > gpt_hdr.last_usable_lba) {
+            entries[0].ending_lba = gpt_hdr.last_usable_lba;
+        }
 
         entries[0].attributes = 1;
         uint16_t efi_part_name[36] = u"EFI System Partition";
@@ -1303,16 +1320,17 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
         gpt_hdr.header_crc32 = 0;
         gpt_hdr.header_crc32 = crc32(&gpt_hdr, sizeof(struct btl_gpt_hdr));
 
-        out = pbfs_write(mnt, 1, 512, &gpt_hdr);
+        out = pbfs_write(mnt, gpt_hdr.mylba, 512, &gpt_hdr);
         if (out != PBFS_RES_SUCCESS) { funcs.free(entries); return out; }
-        out = pbfs_write(mnt, 2, 128 * sizeof(struct btl_gpt_entry), entries);
+        out = pbfs_write(mnt, gpt_hdr.partition_entry_lba, 128 * sizeof(struct btl_gpt_entry), entries);
         if (out != PBFS_RES_SUCCESS) { funcs.free(entries); return out; }
 
         struct btl_gpt_hdr backup_hdr = gpt_hdr;
-        backup_hdr.mylba = mnt->dev->block_count - 1;
+        backup_hdr.mylba = last_lba;
         backup_hdr.alternate_lba = 1;
-        backup_hdr.partition_entry_lba = mnt->dev->block_count - 33;
-        
+        backup_hdr.partition_entry_lba = last_lba - 32;
+        backup_hdr.partition_entry_array_crc32 = crc32(entries, sizeof(struct btl_gpt_entry) * 128);
+
         backup_hdr.header_crc32 = 0;
         backup_hdr.header_crc32 = crc32(&backup_hdr, sizeof(struct btl_gpt_hdr));
 
@@ -1327,5 +1345,53 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
         return out;
     } else {
         return PBFS_ERR_Argument_Invalid;
+    }
+}
+
+
+const char* pbfs_get_err_str(enum PBFS_Result return_code) {
+    switch (return_code) {
+        case PBFS_RES_SUCCESS: return "PBFS_RES_SUCCESS";
+        case PBFS_ERR_UNKNOWN: return "PBFS_ERR_UNKNOWN";
+
+        case PBFS_ERR_Device_Capacity_Too_Small: return "PBFS_ERR_Device_Capacity_Too_Small";
+        case PBFS_ERR_Device_Block_Size_Too_Small: return "PBFS_ERR_Device_Block_Size_Too_Small";
+        
+        case PBFS_ERR_Bootloader_Partition_Too_Small: return "PBFS_ERR_Bootloader_Partition_Too_Small";
+        case PBFS_ERR_No_Bootloader_Partition: return "PBFS_ERR_No_Bootloader_Partition";
+
+        case PBFS_ERR_No_Header_Present: return "PBFS_ERR_No_Header_Present";
+        case PBFS_ERR_Invalid_Header: return "PBFS_ERR_Invalid_Header";
+        case PBFS_ERR_Header_Unaligned: return "PBFS_ERR_Header_Unaligned";
+
+        case PBFS_ERR_Mount_Inactive: return "PBFS_ERR_Mount_Inactive";
+
+        case PBFS_ERR_No_Path: return "PBFS_ERR_No_Path";
+        case PBFS_ERR_Invalid_Path: return "PBFS_ERR_Invalid_Path";
+
+        case PBFS_ERR_File_Not_Found: return "PBFS_ERR_File_Not_Found";
+        case PBFS_ERR_No_Such_File_Or_Directory: return "PBFS_ERR_No_Such_File_Or_Directory";
+        case PBFS_ERR_Invalid_File_Or_Directory: return "PBFS_ERR_Invalid_File_Or_Directory";
+        case PBFS_ERR_File_Already_Exists: return "PBFS_ERR_File_Already_Exists";
+
+        case PBFS_ERR_Wrong_Type: return "PBFS_ERR_Wrong_Type";
+        case PBFS_ERR_Wrong_Permissions: return "PBFS_ERR_Wrong_Permissions";
+
+        case PBFS_ERR_Data_Unaligned: return "PBFS_ERR_Data_Unaligned";
+        case PBFS_ERR_No_Data: return "PBFS_ERR_No_Data";
+        case PBFS_ERR_Argument_Invalid: return "PBFS_ERR_Argument_Invalid";
+
+        case PBFS_ERR_No_Space_Left: return "PBFS_ERR_No_Space_Left";
+
+        case PBFS_ERR_Cannot_Remove_Root: return "PBFS_ERR_Cannot_Remove_Root";
+
+        case PBFS_ERR_Allocation_Failed: return "PBFS_ERR_Allocation_Failed";
+
+        case PBFS_ERR_Kernel_Table_Corrupted: return "PBFS_ERR_Kernel_Table_Corrupted";
+        case PBFS_ERR_DMM_Corrupted: return "PBFS_ERR_DMM_Corrupted";
+        case PBFS_ERR_Bitmap_Corrupted: return "PBFS_ERR_Bitmap_Corrupted";
+        case PBFS_ERR_Sysinfo_Corrupted: return "PBFS_ERR_Sysinfo_Corrupted";
+        
+        default: return "Unknown Status Code";
     }
 }

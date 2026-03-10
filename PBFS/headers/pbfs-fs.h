@@ -85,7 +85,7 @@ struct pbfs_mount {
 
 
 int pbfs_init(struct pbfs_funcs* functions) __attribute__((used));
-int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t boot_part_lba, uint8_t boot_part_size, uint64_t volume_id) __attribute__((used));
+int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t boot_part_lba, uint64_t boot_part_size, uint64_t volume_id) __attribute__((used));
 int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt) __attribute__((used));
 int pbfs_read_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute__((used));
 int pbfs_write_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute__((used));
@@ -152,3 +152,5 @@ enum PBFS_Result {
     PBFS_ERR_Bitmap_Corrupted,
     PBFS_ERR_Sysinfo_Corrupted,
 };
+
+const char* pbfs_get_err_str(enum PBFS_Result return_code) __attribute__((used));

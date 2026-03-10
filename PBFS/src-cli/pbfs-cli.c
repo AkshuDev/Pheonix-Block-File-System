@@ -177,7 +177,7 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
         "Disk Name: %s\nVolume ID: %lld\n"
         "DMM Root LBA: %lld\nBitmap Root LBA: %lld\n"
         "Kernel Table Root LBA: %lld\nData LBA: %lld\n"
-        "Boot Partition LBA: %lld\nBoot Partition Size: %lld",
+        "Boot Partition LBA: %lld\nBoot Partition Size: %lld\n",
         hdr->magic,
         (unsigned int)hdr->block_size, (unsigned long long int)uint128_to_u64(hdr->total_blocks),
         (char*)hdr->disk_name, (unsigned long long int)uint128_to_u64(hdr->volume_id),
@@ -243,13 +243,6 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
 
         printf("=== Data ===\n");
         pbfs_list_dir(mnt, "/");
-        // FILE* f = fopen(image, "rb");
-        // if (!f) {
-        //     perror("Failed to reopen image!\n");
-        //     free(hdr);
-        //     free(disk);
-        //     return FileError;
-        // }
         free(hdr);
         free(disk);
         return EXIT_SUCCESS;
@@ -405,17 +398,23 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--format") == 0) {
             printf("Formating Image...\n");
             printf(
-                "Block Size: %u\nTotal Blocks: %llu\nDisk Name: %s\nReserve Kernel Table: %s\nBoot Parition Size: %u\n",
-                block_dev.block_size, block_dev.block_count, block_dev.name, kerneltable == 1 ? "True" : "False", bootpart == 1 ? bootpartsize : 0
+                "Block Size: %u\nTotal Blocks: %llu\nDisk Name: %s\nReserve Kernel Table: %s\nBoot Partition Size: %u\nBoot Partition LBA: %llu\n",
+                block_dev.block_size, block_dev.block_count, block_dev.name, kerneltable == 1 ? "True" : "False", bootpart == 1 ? bootpartsize : 0, bootpart == 1 ? bootpartlba : 0
             );
             int out = pbfs_format(&block_dev, kerneltable, bootpartlba, bootpartsize, volume_id);
 
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
             printf("Done!\n");
+            out = pbfs_mount(&block_dev, &mnt);
+            if (out != PBFS_RES_SUCCESS) {
+                fprintf(stderr, "Failed to remount, Error: %s\n", pbfs_get_err_str(out));
+                fclose(fp);
+                return PBFS_ERR_UNKNOWN;
+            }
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             printf(PBFS_CLI_HELP);
             fclose(fp);
@@ -439,8 +438,9 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--add") == 0) {
             // Add a file
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -479,15 +479,16 @@ int main(int argc, char** argv) {
             int out = pbfs_add(&mnt, name, uid, gid, parse_file_type(type), parse_file_perms(perms), data, data_size);
             free(data);
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
             printf("Done!\n");
         } else if (strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--remove") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -507,7 +508,7 @@ int main(int argc, char** argv) {
             printf("Removing File [%s] from Image...\n", name);
             int out = pbfs_remove(&mnt, name);
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
@@ -515,8 +516,9 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "-u") == 0 || strcmp(argv[i], "--update") == 0) {
             // Add a file
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -557,15 +559,16 @@ int main(int argc, char** argv) {
             int out = pbfs_update_file(&mnt, name, data, data_size);
             free(data);
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
             printf("Done!\n");
         } else if (strcmp(argv[i], "-ad") == 0 || strcmp(argv[i], "--add_dir") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -582,15 +585,16 @@ int main(int argc, char** argv) {
             printf("Adding Dir [%s] to Image...\n", filepath);
             int out = pbfs_add_dir(&mnt, filepath, uid, gid, parse_file_perms(perms));
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
             printf("Done!\n");
         } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--list") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -607,15 +611,16 @@ int main(int argc, char** argv) {
             printf("Listing [%s] from Image...\n", filepath);
             int out = pbfs_list_dir(&mnt, filepath);
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
             printf("Done!\n");
         } else if (strcmp(argv[i], "-rf") == 0 || strcmp(argv[i], "--read_file") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -635,7 +640,7 @@ int main(int argc, char** argv) {
             int out = pbfs_read_file(&mnt, filepath, &data, &data_size);
             if (out != PBFS_RES_SUCCESS) {
                 if (data) free(data);
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
@@ -647,8 +652,9 @@ int main(int argc, char** argv) {
             printf("\nDone!\n");
         } else if (strcmp(argv[i], "-rfb") == 0 || strcmp(argv[i], "--read_file_binary") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -668,7 +674,7 @@ int main(int argc, char** argv) {
             int out = pbfs_read_file(&mnt, filepath, &data, &data_size);
             if (out != PBFS_RES_SUCCESS) {
                 if (data) free(data);
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
@@ -721,6 +727,15 @@ int main(int argc, char** argv) {
             strncpy(type, argv[i + 1], sizeof(type));
             i++;
         } else if (strcmp(argv[i], "-btl") == 0 || strcmp(argv[i], "--bootloader") == 0) {
+            if (mnt.active != true) {
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
+                    fclose(fp);
+                    return PBFS_ERR_UNKNOWN;
+                }
+            }
+            
             // Add a bootloader
             if (i + 2 > argc) {
                 printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
@@ -758,7 +773,7 @@ int main(int argc, char** argv) {
                 int out = pbfs_add_bootloader(&mnt, data, data_size_aligned, boot_partition_type);
                 free(data);
                 if (out != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "An Error Occurred!\n");
+                    fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return out;
                 }
@@ -776,19 +791,21 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "Bootloader Parition not in disk space?\n");
                 fclose(fp);
                 return InvalidUsage;
-            } else if (bootpartsize < 1) {
+            } else if (bootpartlba < 1) {
                 fprintf(stderr, "Bootloader Parition cannot be at LBA 0!\n");
                 fclose(fp);
                 return InvalidUsage;
             }
             bootpart = 1;
             i++;
+            i++;
         } else if (strcmp(argv[i], "-rkt") == 0 || strcmp(argv[i], "--reserve_kernel_table") == 0) {
             kerneltable = 1;
         } else if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--test") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -796,14 +813,15 @@ int main(int argc, char** argv) {
             
             int out = pbfs_test(&mnt, fp, 1);
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
         } else if (strcmp(argv[i], "-chp") == 0 || strcmp(argv[i], "--change_permissions") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -824,15 +842,16 @@ int main(int argc, char** argv) {
             printf("Changing permissions [%s] for [%s]...\n", perms, filepath);
             int out = pbfs_change_permissions(&mnt, filepath, parse_file_perms(perms));
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
             printf("Done!\n");
         } else if (strcmp(argv[i], "-cpy") == 0 || strcmp(argv[i], "--copy") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -850,15 +869,16 @@ int main(int argc, char** argv) {
             printf("Copying [%s] -> [%s]...\n", filepath, to_path);
             int out = pbfs_copy(&mnt, filepath, to_path);
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
             printf("Done!\n");
         } else if (strcmp(argv[i], "-mv") == 0 || strcmp(argv[i], "--move") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
@@ -876,15 +896,16 @@ int main(int argc, char** argv) {
             printf("Moving [%s] -> [%s]...\n", filepath, to_path);
             int out = pbfs_move(&mnt, filepath, to_path);
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
             printf("Done!\n");
         } else if (strcmp(argv[i], "-rn") == 0 || strcmp(argv[i], "--rename") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
@@ -903,15 +924,16 @@ int main(int argc, char** argv) {
             printf("Renaming [%s] -> [%s]...\n", filepath, new_name);
             int out = pbfs_rename(&mnt, filepath, new_name);
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
             printf("Done!\n");
         } else if (strcmp(argv[i], "-rk") == 0 || strcmp(argv[i], "--remove_kernel") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
@@ -928,15 +950,16 @@ int main(int argc, char** argv) {
             printf("Removing Kernel [%s]...\n", filepath);
             int out = pbfs_remove_kernel(&mnt, filepath);
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
             printf("Done!\n");
         } else if (strcmp(argv[i], "-k") == 0 || strcmp(argv[i], "--kernel") == 0) {
             if (mnt.active != true) {
-                if (pbfs_mount(&block_dev, &mnt) != PBFS_RES_SUCCESS) {
-                    fprintf(stderr, "Failed to mount!\n");
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
@@ -975,7 +998,7 @@ int main(int argc, char** argv) {
 
             int out = pbfs_add_kernel(&mnt, name_path, data, data_size);
             if (out != PBFS_RES_SUCCESS) {
-                fprintf(stderr, "An Error Occurred!\n");
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 free(data);
                 fclose(fp);
                 return out;
