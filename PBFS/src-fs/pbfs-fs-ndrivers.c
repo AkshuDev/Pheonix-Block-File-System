@@ -1325,19 +1325,17 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
         out = pbfs_write(mnt, gpt_hdr.partition_entry_lba, 128 * sizeof(struct btl_gpt_entry), entries);
         if (out != PBFS_RES_SUCCESS) { funcs.free(entries); return out; }
 
-        struct btl_gpt_hdr backup_hdr = gpt_hdr;
-        backup_hdr.mylba = last_lba;
-        backup_hdr.alternate_lba = 1;
-        backup_hdr.partition_entry_lba = last_lba - 32;
-        backup_hdr.partition_entry_array_crc32 = crc32(entries, sizeof(struct btl_gpt_entry) * 128);
+        // Keep using gpt hdr for backup gpt hdr
+        gpt_hdr.mylba = last_lba;
+        gpt_hdr.alternate_lba = 1;
+        gpt_hdr.partition_entry_lba = last_lba - 32;
+        
+        gpt_hdr.header_crc32 = 0;
+        gpt_hdr.header_crc32 = crc32(&gpt_hdr, sizeof(struct btl_gpt_hdr));
 
-        backup_hdr.header_crc32 = 0;
-        backup_hdr.header_crc32 = crc32(&backup_hdr, sizeof(struct btl_gpt_hdr));
-
-        out = pbfs_write(mnt, backup_hdr.mylba, 512, &backup_hdr);
+        out = pbfs_write(mnt, gpt_hdr.mylba, 512, &gpt_hdr);
         if (out != PBFS_RES_SUCCESS) { funcs.free(entries); return out; }
-
-        out = pbfs_write(mnt, backup_hdr.partition_entry_lba, 128 * sizeof(struct btl_gpt_entry), entries);
+        out = pbfs_write(mnt, gpt_hdr.partition_entry_lba, 128 * sizeof(struct btl_gpt_entry), entries);
         if (out != PBFS_RES_SUCCESS) { funcs.free(entries); return out; }
 
         out = pbfs_write(mnt, entries[0].starting_lba, data_size, data);
