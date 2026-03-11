@@ -38,7 +38,7 @@ typedef uint64_t EFI_LBA;
 typedef UINTN RETURN_STATUS;
 
 
-#define EFIAPI
+#define EFIAPI __attribute__((ms_abi))
 
 #define uefi_call_wrapper(func, va_num, ...) func(__VA_ARGS__)
 
