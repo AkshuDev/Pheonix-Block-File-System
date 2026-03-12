@@ -1,7 +1,7 @@
 #pragma once
 
 // LIB
-#define LIB
+#define LIB EFIAPI
 
 #include "pefi_types.h"
 #include "pefi.h"

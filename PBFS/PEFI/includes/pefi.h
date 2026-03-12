@@ -61,7 +61,9 @@ typedef UINTN RETURN_STATUS;
 #define IN OUT
 #define OPTIONAL
 #define CONST const
+
 #define FALSE 0
+#define TRUE !FALSE
 
 #define EFI_ERROR(Status) (((INTN)(Status)) < 0)
 #define ENCODE_ERROR	(StatusCode)((RETURN_STATUS)(MAX_BIT | (StatusCode)))
