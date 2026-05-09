@@ -114,11 +114,13 @@ int pbfs_list_dir(struct pbfs_mount* mnt, const char* path) {
         char perms[10];
         file_perms_to_str(entries[i].perms, perms, sizeof(perms));
 
-        printf("\t%.64s [%s] (%s / at lba %lld)\n",
-               entries[i].name,
-               file_type_to_str(entries[i].type),
-               perms,
-               uint128_to_u64(entries[i].lba));
+        printf(
+            "\t%.64s [%s] (%s / at lba %lld)\n",
+            entries[i].name,
+            file_type_to_str(entries[i].type),
+            perms,
+            uint128_to_u64(entries[i].lba)
+        );
     }
 
     return PBFS_RES_SUCCESS;
