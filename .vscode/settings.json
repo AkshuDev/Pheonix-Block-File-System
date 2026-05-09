@@ -6,5 +6,6 @@
         "pefi_priv.h": "c",
         "pbfs_structs.h": "c",
         "pbfs.h": "c"
-    }
+    },
+    "C_Cpp.default.compilerPath": "/usr/bin/gcc"
 }
