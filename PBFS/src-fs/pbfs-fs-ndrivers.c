@@ -1236,6 +1236,58 @@ int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max
     return PBFS_RES_SUCCESS;
 }
 
+int pbfs_list_items(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* out, size_t max_out_len, size_t* out_len) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (strlen(path) < 1) return PBFS_ERR_No_Path;
+    if (out == NULL) return PBFS_ERR_Argument_Invalid;
+    if (max_out_len < 1) return PBFS_RES_SUCCESS;
+
+    PBFS_DMM_Entry e = {0};
+    uint64_t e_lba = 0;
+    int ret = find_dmm_entry(path, &e, &e_lba, mnt);
+    if (ret != -1 && ret != PBFS_RES_SUCCESS) return ret;
+
+    uint64_t dir_dmm_lba = 0;
+
+    if (ret == -1) {
+        dir_dmm_lba = mnt->header64.dmm_root_lba;
+    } else {
+        if (!(e.type & METADATA_FLAG_DIR)) {
+            return PBFS_ERR_Invalid_Path;
+        }
+
+        PBFS_Metadata md = {0};
+        uint64_t md_lba = uint128_to_u64(e.lba);
+
+        ret = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
+        if (ret != PBFS_RES_SUCCESS) return ret;
+
+        if (md.data_offset < 1) {
+            return PBFS_ERR_Invalid_File_Or_Directory;
+        }
+
+        dir_dmm_lba = md_lba + md.data_offset;
+    }
+
+    size_t count = 0;
+
+    while (dir_dmm_lba > 0 && count < max_out_len) {
+        PBFS_DMM dmm = {0};
+
+        ret = pbfs_read(mnt, dir_dmm_lba, sizeof(PBFS_DMM), &dmm);
+        if (ret != PBFS_RES_SUCCESS) return ret;
+
+        for (uint32_t i = 0; i < dmm.entry_count && count < max_out_len; i++) {
+            out[count++] = dmm.entries[i];
+        }
+
+        dir_dmm_lba = uint128_to_u64(dmm.extender_lba);
+    }
+    *out_len = count;
+    
+    return PBFS_RES_SUCCESS;
+}
+
 int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size, uint8_t boot_part_type) {
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (data == NULL || data_size < 1) return PBFS_ERR_Argument_Invalid;
@@ -1345,7 +1397,6 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
         return PBFS_ERR_Argument_Invalid;
     }
 }
-
 
 const char* pbfs_get_err_str(enum PBFS_Result return_code) {
     switch (return_code) {

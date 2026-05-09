@@ -93,55 +93,34 @@ static int pbfs_verify_header(PBFS_Header* hdr) {
 
 // Lists a dir from the disk
 int pbfs_list_dir(struct pbfs_mount* mnt, const char* path) {
-    PBFS_DMM_Entry dir_entry = {0};
-    PBFS_DMM dir_dmm = {0};
-    uint64_t dir_lba = 0;
-    int out = pbfs_find_entry(path, &dir_entry, &dir_lba, mnt);
-    if (out != -1 && out != EXIT_SUCCESS) {
-        fprintf(stderr, "No such directory: %s\n", path);
+    if (!mnt->active) {
+        fprintf(stderr, "Mount inactive!\n");
+        return PBFS_ERR_Mount_Inactive;
+    }
+
+    PBFS_DMM_Entry entries[256];
+    size_t out_len = 0;
+
+    int out = pbfs_list_items(mnt, (char*)path, entries, 256, &out_len);
+
+    if (out != PBFS_RES_SUCCESS) {
+        fprintf(stderr, "Failed to list directory: %s\n", pbfs_get_err_str(out));
         return out;
-    } else if (out == -1) {
-        if (mnt->header64.dmm_root_lba <= 1) {
-            fprintf(stderr, "Invalid Header!\n");
-            return InvalidHeader;
-        }
-        dir_lba = mnt->header64.dmm_root_lba;
-        pbfs_read(mnt, dir_lba, sizeof(PBFS_DMM), &dir_dmm);
-    } else {
-        if (!(dir_entry.type & METADATA_FLAG_DIR)) {
-            fprintf(stderr, "Not a directory: %s\n", path);
-            return FileNotFound;
-        }
-
-        PBFS_Metadata parent_md = {0};
-        pbfs_read(mnt, uint128_to_u64(dir_entry.lba), sizeof(PBFS_Metadata), &parent_md);
-        if (parent_md.data_offset < 1) {
-            fprintf(stderr, "Invalid directory: %s\n", path);
-            return InvalidPath;
-        }
-        if (!(parent_md.ex_flags & PERM_READ)) {
-            char parent_perms[10];
-            file_perms_to_str(parent_md.ex_flags, parent_perms, sizeof(parent_perms));
-            fprintf(stderr, "Permissions Denied for directory: %s [%s]\n", path, parent_perms);
-            return PermissionDenied;
-        }
-        dir_lba = uint128_to_u64(dir_entry.lba) + parent_md.data_offset;
-        pbfs_read(mnt, uint128_to_u64(dir_entry.lba), sizeof(PBFS_DMM), &dir_dmm);
     }
 
-    uint64_t dmm_lba = dir_lba;
     printf("Listing: %s\n", path);
-    while (dmm_lba > 0) {
-        PBFS_DMM dmm;
-        pbfs_read(mnt, dmm_lba, sizeof(PBFS_DMM), &dmm);
 
-        for (uint32_t i = 0; i < dmm.entry_count; i++) {
-            char perms[10];
-            file_perms_to_str(dmm.entries[i].perms, perms, sizeof(perms));
-            printf("\t%.64s [%s] (%s / at lba %lld)\n", dmm.entries[i].name, file_type_to_str(dmm.entries[i].type), perms, uint128_to_u64(dmm.entries[i].lba));
-        }
-        dmm_lba = uint128_to_u64(dmm.extender_lba);
+    for (size_t i = 0; i < out_len; i++) {
+        char perms[10];
+        file_perms_to_str(entries[i].perms, perms, sizeof(perms));
+
+        printf("\t%.64s [%s] (%s / at lba %lld)\n",
+               entries[i].name,
+               file_type_to_str(entries[i].type),
+               perms,
+               uint128_to_u64(entries[i].lba));
     }
+
     return PBFS_RES_SUCCESS;
 }
 
