@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #define ALIGN_UP(num, align) (((num) + ((align) - 1)) & ~((align) - 1))
 
@@ -74,12 +75,28 @@ struct guid {
 
 static struct pbfs_funcs funcs = {0};
 
+static atomic_flag pbfs_funcs_lock = ATOMIC_FLAG_INIT;
+
 static uint32_t crc32_table[256];
 static int crc32_initialized = 0;
 static uint64_t guid_seed = 0x123456789ABCDEF0;
 
+static atomic_flag pbfs_crc32_lock = ATOMIC_FLAG_INIT;
+
 // static funcs
+static void lock_spinlock(atomic_flag* lock) {
+	while (atomic_flag_test_and_set(lock)) {
+		__asm__ volatile("pause");
+	}
+}
+
+static void unlock_spinlock(atomic_flag* lock) {
+	atomic_flag_clear(lock);
+}
+
 static void crc32_init() {
+	lock_spinlock(&pbfs_crc32_lock);
+
     uint32_t polynomial = 0xEDB88320;
     for (uint32_t i = 0; i < 256; i++) {
         uint32_t c = i;
@@ -90,15 +107,19 @@ static void crc32_init() {
         crc32_table[i] = c;
     }
     crc32_initialized = 1;
+
+	unlock_spinlock(&pbfs_crc32_lock);
 }
 
 static uint32_t crc32(const void *data, size_t len) {
     if (!crc32_initialized) crc32_init();
+
     uint32_t c = 0xFFFFFFFF;
     const uint8_t *u8 = (const uint8_t *)data;
     for (size_t i = 0; i < len; i++) {
         c = crc32_table[(c ^ u8[i]) & 0xFF] ^ (c >> 8);
     }
+
     return c ^ 0xFFFFFFFF;
 }
 
@@ -253,7 +274,15 @@ static uint64_t bitmap_set(PBFS_Bitmap* current, uint64_t lba, uint64_t bitmap_l
         else
             bitmap_bit_clear(current->bytes, local_bit);
         if (pbfs_write(mnt, bitmap_lba, sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) return 0;
-        return lba;
+        
+		if (bitmap_idx == 0) {
+			if (value == 1)
+				bitmap_bit_set(mnt->root_bitmap64.bytes, local_bit);
+			else
+				bitmap_bit_clear(mnt->root_bitmap64.bytes, local_bit);
+		}
+
+		return lba;
     }
 
     // Need next extender
@@ -450,10 +479,27 @@ static int find_dmm_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_l
             current_dmm_lba = uint128_to_u64(out->lba) + md.data_offset;
         }
     }
-    return PBFS_RES_SUCCESS;
+    
+	if (out->type & METADATA_FLAG_SYMLINK) {
+		uint128_t psize = UINT128_ZERO;
+		int o = pbfs_read(mnt, *out_lba, sizeof(uint128_t), &psize);
+		if (o != PBFS_RES_SUCCESS) return o;
+
+		char* buf = (char*)funcs.malloc(uint128_to_u64(psize) + sizeof(uint128_t));
+		if (!buf) return PBFS_ERR_Allocation_Failed;
+
+		o = pbfs_read(mnt, *out_lba, sizeof(uint128_t) + uint128_to_u64(psize), &buf);
+		char* data = buf + sizeof(uint128_t);
+
+		o = find_dmm_entry((const char*)data, out, out_lba, mnt);
+		funcs.free(data);
+
+		return o;
+	}
+	return PBFS_RES_SUCCESS;
 }
 
-static int add_kernel_entry(struct pbfs_mount* mnt, PBFS_Kernel_Table* cur_kt, uint64_t cur_kt_lba, uint64_t lba, uint64_t blocks, char* name) {
+static int add_kernel_entry(struct pbfs_mount* mnt, PBFS_Kernel_Table* cur_kt, uint64_t cur_kt_lba, uint64_t lba, uint64_t blocks, const char* name, PBFS_Kernel_Flags flags) {
     PBFS_Kernel_Table kt = *cur_kt;
     PBFS_Kernel_Table64 kt64 = {0};
     kernel_table_to_kernel_table64(&kt, &kt64);
@@ -467,6 +513,7 @@ static int add_kernel_entry(struct pbfs_mount* mnt, PBFS_Kernel_Table* cur_kt, u
             PBFS_Kernel_Entry* entry = &current->entries[current->entry_count];
             entry->lba = uint128_from_u64(lba);
             entry->count = uint128_from_u64(blocks);
+			entry->flags = flags;
             strncpy(entry->name, name, sizeof(entry->name) - 1);
             entry->name[sizeof(entry->name) - 1] = '\0';
             current->entry_count++;
@@ -488,6 +535,7 @@ static int add_kernel_entry(struct pbfs_mount* mnt, PBFS_Kernel_Table* cur_kt, u
         PBFS_Kernel_Entry* entry = &new_extender.entries[0];
         entry->lba = uint128_from_u64(lba);
         entry->count = uint128_from_u64(blocks);
+		entry->flags = flags;
         strncpy(entry->name, name, sizeof(entry->name) - 1);
         entry->name[sizeof(entry->name) - 1] = '\0';
 
@@ -628,7 +676,10 @@ static int is_little_endian(void) {
 
 // API
 int pbfs_init(struct pbfs_funcs* functions) {
+	lock_spinlock(&pbfs_funcs_lock);
     funcs = *functions;
+	unlock_spinlock(&pbfs_funcs_lock);
+
     return PBFS_RES_SUCCESS;
 }
 
@@ -1135,7 +1186,7 @@ int pbfs_find_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, st
     return find_dmm_entry(path, out, out_lba, mnt);
 }
 
-int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, uint8_t* data, size_t data_size) {
+int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Flags flags, uint8_t* data, size_t data_size) {
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(name) < 1) return PBFS_ERR_Invalid_Path;
     if (data_size < 1) return PBFS_ERR_Argument_Invalid;
@@ -1152,7 +1203,7 @@ int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, uint8_t* data, siz
     int out = pbfs_write(mnt, blocks, data_size, data);
     if (out != PBFS_RES_SUCCESS) return out;
 
-    out = add_kernel_entry(mnt, &mnt->root_kernel_table, mnt->header64.kernel_table_lba, blocks, required_blocks, name);
+    out = add_kernel_entry(mnt, &mnt->root_kernel_table, mnt->header64.kernel_table_lba, blocks, required_blocks, name, flags);
     if (out != PBFS_RES_SUCCESS) return out;
 
     for (uint64_t i = blocks; i < blocks + required_blocks; i++) {

@@ -27,7 +27,8 @@ typedef struct {
 } PBFS_Bitmap64 __attribute__((packed));
 
 typedef struct {
-    char name[64];
+    char name[32];
+	PBFS_Kernel_Flags flags;
     uint64_t lba;
     uint64_t count;
 } PBFS_Kernel_Entry64 __attribute__((packed));
@@ -36,7 +37,7 @@ typedef struct {
     PBFS_Kernel_Entry64 entries[PBFS_KERNEL_TABLE_ENTRIES];
     uint64_t entry_count;
 
-    uint8_t reserved[16];
+    uint8_t reserved[12];
     uint64_t extender_lba;
 } PBFS_Kernel_Table64 __attribute__((packed));
 

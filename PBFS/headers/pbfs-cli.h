@@ -18,8 +18,10 @@
 "\t--permissions <permissions>: Sets the Permissions for the added file (ADD FILE/DIR / CHP Only). Format -\n" \
 "\t\tr (read)/w (write)/e (execute)/s (system)/p (protected)/l (locked)\n" \
 "\t\tCan add multiple together, examples - rw (read+write) / res (read + execute + system)\n" \
-"\t--type <type>: Sets the Type for the added file (ADD FILE Only). Types -\n" \
-"\t\tdir, file, res (reserve), sys (system)\n" \
+"\t--type <type>: Sets the Type for the added file (ADD FILE and ADD KERNEL Only).\n\t\tTypes for files -\n" \
+"\t\t\tdir, file, res (reserve), sys (system), symlink (symbolic link)\n" \
+"\t\tTypes for Kernel -\n" \
+"\t\t\tchainloaded, connector (data points to a PBFS Connector)\n" \
 "\t-f/--format: Format the disk\n" \
 "\t-c/--create: Create the disk\n" \
 "\t-a/--add <filepath>: Adds a file to the image. (use --name for the file name or file path will be used)\n" \
@@ -33,12 +35,12 @@
 "\t-btl/--bootloader <filepath>: Adds a bootloader to the image.\n" \
 "\t-rbp/--reserve_boot_partition <Start LBA (Aligned to 4096)> <Number of Blocks>: Reserves the specified number of blocks before the PBFS Header (MAX: 511)\n" \
 "\t-rkt/--reserve_kernel_table: Reserves a Kernel Table Block (Extendable).\n" \
-"\t-k/--kernel <path>: Adds a kernel to the kernel table if found.\n" \
+"\t-k/--kernel <path>: Adds a kernel to the kernel table if found. (\n" \
 "\t-rk/--remove_kernel <path>: Removes a kernel from the kernel table.\n" \
 "\t-t/--test: Tests and shows information about the disk.\n" \
 "\t-l/--list <path>: Lists a dir or shows file path if file exists.\n" \
 "\t-rf/--read_file <path>: Reads a file from within the image.\n" \
 "\t-rfb/--read_file_binary <path>: Reads a file from within the image. (binary)\n" \
-"\t-gpt/--gpt: Adds GPT Headers, NOTE: Requires Bootloader Parition to be atleast 30 blocks (BTL ONLY)" \
-"\t-mbr/--mbr: Adds MBR Parition Headers, NOTE: Requires Bootloader Parition to be atleast 2 blocks (BTL ONLY)" \
+"\t-gpt/--gpt: Adds GPT Headers, NOTE: Requires Bootloader Parition to be atleast 30 blocks (BTL ONLY)\n" \
+"\t-mbr/--mbr: Adds MBR Parition Headers, NOTE: Requires Bootloader Parition to be atleast 2 blocks (BTL ONLY)\n" \
 "\t-h/--help: Shows this display message.\n"

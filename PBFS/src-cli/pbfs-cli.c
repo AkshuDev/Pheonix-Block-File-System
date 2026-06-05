@@ -28,8 +28,10 @@ static PBFS_Metadata_Flags parse_file_type(char* str) {
         type = METADATA_FLAG_RES;
     } else if (strcmp(str, "sys") == 0) {
         type = METADATA_FLAG_SYS;
-    }
-    return type;
+    } else if (strcmp(str, "symlink") == 0) {
+		type = METADATA_FLAG_SYMLINK;
+	}
+	return type;
 }
 static PBFS_Permission_Flags parse_file_perms(char* str) {
     PBFS_Permission_Flags perms = PERM_INVALID;
@@ -52,6 +54,23 @@ static PBFS_Permission_Flags parse_file_perms(char* str) {
 
     return perms;
 }
+static PBFS_Kernel_Flags parse_kernel_type(char* str) {
+    PBFS_Kernel_Flags type = 0;
+    if (strcmp(str, "chainloaded") == 0) {
+        type = KERNEL_FLAG_CHAINLOADED;
+    } else if (strcmp(str, "connector") == 0) {
+        type = KERNEL_FLAG_CONNECTOR;
+    }
+	return type;
+}
+
+static const char* kernel_flags_to_str(PBFS_Kernel_Flags flags) {
+	switch (flags) {
+		case KERNEL_FLAG_CHAINLOADED: return "Chainloaded";
+		case KERNEL_FLAG_CONNECTOR: return "Connected via PBFS Connector";
+		default: "None";
+	}
+}
 static const char* file_type_to_str(PBFS_Metadata_Flags type) {
     switch (type) {
         case METADATA_FLAG_INVALID: return "Invalid";
@@ -60,6 +79,7 @@ static const char* file_type_to_str(PBFS_Metadata_Flags type) {
         case METADATA_FLAG_SYS: return "System";
         case METADATA_FLAG_RES: return "Reserved";
         case METADATA_FLAG_PBFS: return "PBFS";
+		case METADATA_FLAG_SYMLINK: return "Symbolic Link";
         default: "Invalid";
     }
 }
@@ -211,10 +231,12 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
                         "== Kernel Entry (%d) ==\n"
                         "\tName: %.64s\n"
                         "\tLBA: %lld\n"
-                        "\tCount: %lld\n",
+                        "\tCount: %lld\n"
+						"\tFlags: %s",
                         i, entry->name,
                         (unsigned long long int)uint128_to_u64(entry->lba),
-                        (unsigned long long int)uint128_to_u64(entry->count)
+                        (unsigned long long int)uint128_to_u64(entry->count),
+						kernel_flags_to_str(entry->flags)
                     );
                 }
 
@@ -977,7 +999,7 @@ int main(int argc, char** argv) {
             fread(data, 1, data_size, f);
             fclose(f);
 
-            int out = pbfs_add_kernel(&mnt, name_path, data, data_size);
+            int out = pbfs_add_kernel(&mnt, name_path, parse_kernel_type(type), data, data_size);
             if (out != PBFS_RES_SUCCESS) {
                 fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 free(data);

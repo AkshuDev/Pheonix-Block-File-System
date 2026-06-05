@@ -14,7 +14,11 @@ OBJS := $(C_OBJS) $(ASM_OBJS)
 # === END CONFIG ===
 # === TOOLS ===
 CC := gcc
-CFLAGS := -I$(headers_dir) -Wall -g -w
+
+EXTRA ?= 
+OPT_LEVEL ?= 3
+
+CFLAGS := $(EXTRA) -O$(OPT_LEVEL) -I$(headers_dir) -Wall -w
 CFLAGS_LIB := 
 
 OS := $(shell uname -s)

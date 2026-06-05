@@ -7,7 +7,7 @@
 #define PBFS_BITMAP_LIMIT 496
 #define PBFS_DISK_NAME_LEN 32
 
-#define PBFS_KERNEL_TABLE_ENTRIES 5
+#define PBFS_KERNEL_TABLE_ENTRIES 7
 #define PBFS_DMM_ENTRIES 4
 
 #define PBFS_MAX_BITMAP_CHAIN 50
@@ -44,8 +44,14 @@ typedef struct {
     uint128_t extender_lba;
 } PBFS_Bitmap __attribute__((packed));
 
+typedef enum {
+    KERNEL_FLAG_CHAINLOADED = 1 << 0,
+	KERNEL_FLAG_CONNECTOR = 1 << 1,
+} PBFS_Kernel_Flags;
+
 typedef struct {
-    char name[64];
+    char name[32];
+	PBFS_Kernel_Flags flags;
     uint128_t lba;
     uint128_t count;
 } PBFS_Kernel_Entry __attribute__((packed));
@@ -54,7 +60,7 @@ typedef struct {
     PBFS_Kernel_Entry entries[PBFS_KERNEL_TABLE_ENTRIES];
     uint64_t entry_count;
 
-    uint8_t reserved[16];
+    uint8_t reserved[12];
     uint128_t extender_lba;
 } PBFS_Kernel_Table __attribute__((packed));
 
@@ -96,7 +102,8 @@ typedef enum {
     METADATA_FLAG_PBFS = 1 << 1,
     METADATA_FLAG_SYS = 1 << 2,
     METADATA_FLAG_FILE = 1 << 3,
-    METADATA_FLAG_DIR = 1 << 4 
+    METADATA_FLAG_DIR = 1 << 4,
+	METADATA_FLAG_SYMLINK = 1 << 5,
 } PBFS_Metadata_Flags;
 
 typedef struct {

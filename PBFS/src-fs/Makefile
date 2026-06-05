@@ -20,7 +20,9 @@ OBJS_NDRIVER := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS_NDRIVER))
 CC := gcc
 AR := ar
 
-CFLAGS := -I $(HEADER_DIR) -fno-stack-protector -Wall -Wextra -Werror=implicit-function-declaration -std=gnu11 -pipe -ffreestanding
+EXTRA ?= 
+OPT_LEVEL ?= 3
+CFLAGS := $(EXTRA) -O$(OPT_LEVEL) -I $(HEADER_DIR) -fno-stack-protector -Wall -Wextra -Werror=implicit-function-declaration -std=gnu11 -pipe -ffreestanding
 ARFLAGS := rcs
 
 LIB_NDRIVERS := $(BIN_DIR)/libpbfs-ndrivers.a
