@@ -15,6 +15,7 @@
 #include <stdatomic.h>
 
 #define ALIGN_UP(num, align) (((num) + ((align) - 1)) & ~((align) - 1))
+#define PBFS_MAX_BITMAP_CHAIN(mnt) ((((mnt)->dev->block_count - (mnt)->partition_start_lba) + (PBFS_BITMAP_LIMIT * 8) - 1) / (PBFS_BITMAP_LIMIT * 8))
 
 // Bootloader structs
 struct btl_mbr_parition_entry {
@@ -82,6 +83,9 @@ static int crc32_initialized = 0;
 static uint64_t guid_seed = 0x123456789ABCDEF0;
 
 static atomic_flag pbfs_crc32_lock = ATOMIC_FLAG_INIT;
+
+static uint64_t dmm_cache[PBFS_MAX_DMM_CHAIN];
+static atomic_flag dmm_cache_lock = ATOMIC_FLAG_INIT;
 
 // static funcs
 static void lock_spinlock(atomic_flag* lock) {
@@ -225,18 +229,45 @@ static int bitmap_test_recursive(PBFS_Bitmap64* current, uint64_t lba, uint64_t 
 static uint64_t bitmap_find_blocks(PBFS_Bitmap64* start, uint64_t start_lba, uint64_t blocks, struct pbfs_mount* mnt) {
     if (blocks == 0) return 0;
     
-    PBFS_Bitmap64 current = *start;
-    PBFS_Bitmap tmp_bitmap = {0};
     uint64_t bitmap_idx = 0;
 
     uint64_t run_start = 0;
     uint64_t run_length = 0;
     bool in_run = false;
 
-    for (uint64_t depth = 0; depth < PBFS_MAX_BITMAP_CHAIN; depth++) {
-        uint64_t slba = depth == 0 ? start_lba : 0;
-        for (uint64_t i = slba; i < (PBFS_BITMAP_LIMIT * 8); i++) {
+    for (uint64_t depth = 0; depth < PBFS_MAX_BITMAP_CHAIN(mnt); depth++) {
+		PBFS_Bitmap64 current;
+		if (bitmap_idx < mnt->bitmap_count) {
+            current = mnt->bitmaps[bitmap_idx];
+        } else {
+            PBFS_Bitmap tmp_bitmap;
+            uint64_t lba;
 
+            if (bitmap_idx == 0)
+                lba = mnt->header64.bitmap_lba;
+            else
+                lba = mnt->bitmaps[bitmap_idx - 1].extender_lba;
+            if (bitmap_idx > 0 && mnt->bitmaps[bitmap_idx-1].extender_lba <= 1) return 0;
+            if (pbfs_read(mnt, lba, sizeof(PBFS_Bitmap), &tmp_bitmap) != PBFS_RES_SUCCESS) {
+                return 0;
+            }
+
+            if (mnt->bitmap_cap <= mnt->bitmap_count + 2) {
+				void* nptr = funcs.realloc(mnt->bitmaps, (mnt->bitmap_count + 18) * sizeof(PBFS_Bitmap64));
+				if (!nptr) return 0;
+
+				mnt->bitmaps = nptr;
+				mnt->bitmap_cap = mnt->bitmap_count + 18;
+			}
+            bitmap_to_bitmap64(&tmp_bitmap, &mnt->bitmaps[bitmap_idx]);
+
+			if (bitmap_idx != mnt->bitmap_count) return 0;
+            current = mnt->bitmaps[bitmap_idx];
+            mnt->bitmap_count++;
+        }
+
+        uint64_t slba = bitmap_idx == 0 ? start_lba : 0;
+        for (uint64_t i = slba; i < (PBFS_BITMAP_LIMIT * 8); i++) {
             if (!bitmap_bit_test(current.bytes, i)) {
                 if (!in_run) {
                     run_start = (bitmap_idx * (PBFS_BITMAP_LIMIT * 8)) + i;
@@ -251,74 +282,116 @@ static uint64_t bitmap_find_blocks(PBFS_Bitmap64* start, uint64_t start_lba, uin
                 run_length = 0;
             }
         }
-        if (current.extender_lba <= 1)
-            return 0;
-
-        if (pbfs_read(mnt, current.extender_lba, sizeof(PBFS_Bitmap), &tmp_bitmap) != PBFS_RES_SUCCESS) return 0;
-        bitmap_to_bitmap64(&tmp_bitmap, &current);
-
-        bitmap_idx++;
+        if (current.extender_lba <= 1) return 0;
     }
 
     return 0;
 }
 
 static uint64_t bitmap_set(PBFS_Bitmap* current, uint64_t lba, uint64_t bitmap_lba, uint64_t bitmap_idx, struct pbfs_mount* mnt, uint8_t value) { // value: 1/0 (default: 0)
-    PBFS_Bitmap64 current64 = {0};
-    bitmap_to_bitmap64(current, &current64);
-    
-    if (is_lba_in_current_bitmap(uint128_from_u64(lba), uint128_from_u64(bitmap_idx))) {
-        uint64_t local_bit = lba % (PBFS_BITMAP_LIMIT * 8);
-        if (value == 1)
-            bitmap_bit_set(current->bytes, local_bit);
-        else
-            bitmap_bit_clear(current->bytes, local_bit);
-        if (pbfs_write(mnt, bitmap_lba, sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) return 0;
-        
-		if (bitmap_idx == 0) {
-			if (value == 1)
-				bitmap_bit_set(mnt->root_bitmap64.bytes, local_bit);
-			else
-				bitmap_bit_clear(mnt->root_bitmap64.bytes, local_bit);
-		}
-
-		return lba;
-    }
-
-    // Need next extender
     PBFS_Bitmap next = {0};
-    PBFS_Bitmap64 next64 = {0};
 
-    if (current64.extender_lba <= 1) {
-        // Find a free block in CURRENT bitmap to use as the NEW extension block
-        // use the first available bit in the current data range
-        uint64_t new_block = 0;
-        bool found = false;
-        for (uint64_t i = 0; i < (PBFS_BITMAP_LIMIT * 8); i++) {
-            if (!bitmap_bit_test(current->bytes, i)) {
-                new_block = (bitmap_idx * (PBFS_BITMAP_LIMIT * 8)) + i;
-                bitmap_bit_set(current->bytes, i);
-                found = true;
-                break;
+    while (bitmap_idx < PBFS_MAX_BITMAP_CHAIN(mnt)) {
+        PBFS_Bitmap64 current64;
+        bitmap_to_bitmap64(current, &current64);
+
+        if (is_lba_in_current_bitmap(uint128_from_u64(lba), uint128_from_u64(bitmap_idx))) {
+            uint64_t local_bit = lba % (PBFS_BITMAP_LIMIT * 8);
+            if (value)
+                bitmap_bit_set(current->bytes, local_bit);
+            else
+                bitmap_bit_clear(current->bytes, local_bit);
+
+            if (pbfs_write(mnt, bitmap_lba, sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) {
+                return 0;
             }
+
+            if (bitmap_idx < mnt->bitmap_count) bitmap_to_bitmap64(current, &mnt->bitmaps[bitmap_idx]);
+
+            return lba;
         }
 
-        if (found == false) return 0; // Truly out of space
+        if (current64.extender_lba <= 1) {
+            uint64_t new_block = 0;
+            bool found = false;
 
-        // Link current to new
-        current64.extender_lba = new_block;
-        current->extender_lba = uint128_from_u64(new_block);
-        if (pbfs_write(mnt, bitmap_lba, sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) return 0;
+            for (uint64_t i = 0; i < (PBFS_BITMAP_LIMIT * 8); i++) {
+                if (!bitmap_bit_test(current->bytes, i)) {
+                    new_block = bitmap_find_blocks(&mnt->bitmaps[0], 0, 1, mnt);
+					if (new_block <= 0) return 0;
+                    bitmap_bit_set(current->bytes, i);
 
-        // Initialize new bitmap block
-        memset(&next, sizeof(PBFS_Bitmap), 0);
-        if (pbfs_write(mnt, new_block, sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) return 0;
-    } else {
-        if (pbfs_read(mnt, current64.extender_lba, sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) return 0;
-        bitmap_to_bitmap64(&next, &next64);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return 0;
+
+            current->extender_lba = uint128_from_u64(new_block);
+            if (pbfs_write(mnt, bitmap_lba, sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) {
+                return 0;
+            }
+
+            if (bitmap_idx < mnt->bitmap_count)
+                bitmap_to_bitmap64(current, &mnt->bitmaps[bitmap_idx]);
+
+            memset(&next, 0, sizeof(next));
+            if (pbfs_write(mnt, new_block, sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) {
+                return 0;
+            }
+
+            if (mnt->bitmap_count >= mnt->bitmap_cap) {
+                void *nptr = funcs.realloc(mnt->bitmaps, (mnt->bitmap_count + 18) * sizeof(PBFS_Bitmap64));
+                if (!nptr) return 0;
+
+                mnt->bitmaps = nptr;
+                mnt->bitmap_cap = mnt->bitmap_count + 18;
+            }
+
+            bitmap_to_bitmap64(&next, &mnt->bitmaps[mnt->bitmap_count]);
+            mnt->bitmap_count++;
+
+            current = &next;
+            bitmap_lba = new_block;
+            bitmap_idx++;
+
+            continue;
+        }
+
+        if (bitmap_idx + 1 < mnt->bitmap_count) {
+            PBFS_Bitmap cached_next;
+            memset(&cached_next, 0, sizeof(cached_next));
+            cached_next.extender_lba = uint128_from_u64(mnt->bitmaps[bitmap_idx + 1].extender_lba);
+
+            memcpy(cached_next.bytes, mnt->bitmaps[bitmap_idx + 1].bytes, sizeof(cached_next.bytes));
+            current = &cached_next;
+        } else {
+            if (pbfs_read(mnt, current64.extender_lba, sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) {
+                return 0;
+            }
+            if (mnt->bitmap_count >= mnt->bitmap_cap) {
+                void *nptr = funcs.realloc(mnt->bitmaps, (mnt->bitmap_count + 18) * sizeof(PBFS_Bitmap64));
+                if (!nptr)
+                    return 0;
+
+                mnt->bitmaps = nptr;
+                mnt->bitmap_cap = mnt->bitmap_count + 18;
+            }
+
+            bitmap_to_bitmap64(&next, &mnt->bitmaps[mnt->bitmap_count]);
+            mnt->bitmap_count++;
+
+            current = &next;
+			bitmap_lba = current64.extender_lba;
+			bitmap_idx++;
+			continue;
+        }
+
+        bitmap_lba = current64.extender_lba;
+        bitmap_idx++;
     }
 
-    return bitmap_set(&next, lba, current64.extender_lba, ++bitmap_idx, mnt, value);
+    return 0;
 }
 
 static int add_dmm_entry(struct pbfs_mount* mnt, PBFS_DMM* cur_dmm, uint64_t cur_dmm_lba, uint64_t lba, char* name, PBFS_Metadata_Flags type, PBFS_Permission_Flags perms, uint64_t created_ts, uint64_t modified_ts) {
@@ -404,12 +477,13 @@ static int remove_dmm_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur_dm
             }
         }
 
-        if (found_idx != -1) {
+        if (found_idx != -1 && dmm.entry_count > 0) {
             // Shift entries left to fill the gap
             for (uint32_t i = found_idx; i < dmm.entry_count - 1; i++) {
                 dmm.entries[i] = dmm.entries[i + 1];
             }
             dmm.entry_count--;
+			memset(&dmm.entries[dmm.entry_count], 0, sizeof(PBFS_DMM_Entry));
 
             // Write updated DMM block
             return pbfs_write(mnt, current_lba, sizeof(PBFS_DMM), &dmm);
@@ -434,21 +508,33 @@ static int find_dmm_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_l
         return -1; // Root dmm
     }
 
-    uint64_t current_dmm_lba = mnt->header64.dmm_root_lba;
+	lock_spinlock(&dmm_cache_lock);
+
+	dmm_cache[0] = mnt->header64.dmm_root_lba;
+    uint64_t current_dmm_lba = dmm_cache[0];
     char part[PBFS_MAX_NAME_LEN];
     int depth = 0;
+	int path_idx = 0;
     int found = 0;
 
-    while (depth < PBFS_MAX_DMM_CHAIN) {
-        path_part(normalized, depth++, part, PBFS_MAX_NAME_LEN);
+    while (path_idx < PBFS_MAX_DMM_CHAIN) {
+        path_part(normalized, path_idx++, part, PBFS_MAX_NAME_LEN);
         if (strlen(part) == 0) break;
+
+		if (strcmp(part, ".") == 0) {
+			continue;
+		} else if (strcmp(part, "..") == 0) {
+			if (depth > 0) depth--;
+			current_dmm_lba = dmm_cache[depth];
+			continue;
+		}
 
         found = 0;
         uint64_t iter_lba = current_dmm_lba;
-        while (iter_lba > 0) {
+        for (int chain = 0; chain < PBFS_MAX_DMM_CHAIN && iter_lba > 0; chain++) {
             PBFS_DMM dmm;
             int out_res = pbfs_read(mnt, iter_lba, sizeof(PBFS_DMM), &dmm);
-            if (out_res != PBFS_RES_SUCCESS) return out_res;
+            if (out_res != PBFS_RES_SUCCESS) {unlock_spinlock(&dmm_cache_lock); return out_res;}
 
             for (uint32_t i = 0; i < dmm.entry_count; i++) {
                 if (strcmp(dmm.entries[i].name, part) == 0) {
@@ -461,24 +547,32 @@ static int find_dmm_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_l
             if (found) break;
             iter_lba = uint128_to_u64(dmm.extender_lba);
         }
+		if (!found && iter_lba > 0) {
+			unlock_spinlock(&dmm_cache_lock);
+			return PBFS_ERR_DMM_Corrupted;
+		}
 
-        if (!found) return PBFS_ERR_File_Not_Found;
+        if (!found) {unlock_spinlock(&dmm_cache_lock); return PBFS_ERR_File_Not_Found;}
 
         // If we have more parts to go, this must be a directory
         char next_part[PBFS_MAX_NAME_LEN];
-        path_part(normalized, depth, next_part, PBFS_MAX_NAME_LEN);
+        path_part(normalized, path_idx, next_part, PBFS_MAX_NAME_LEN);
         if (strlen(next_part) > 0) {
-            if (!(out->type & METADATA_FLAG_DIR)) return PBFS_ERR_Invalid_Path;
+            if (!(out->type & METADATA_FLAG_DIR)) {unlock_spinlock(&dmm_cache_lock); return PBFS_ERR_Invalid_Path;}
             PBFS_Metadata md = {0};
             int out_res = pbfs_read(mnt, uint128_to_u64(out->lba), sizeof(PBFS_Metadata), &md);
-            if (out_res != PBFS_RES_SUCCESS) return out_res;
+            if (out_res != PBFS_RES_SUCCESS) {unlock_spinlock(&dmm_cache_lock); return out_res;}
             if (md.data_offset < 1) {
+				unlock_spinlock(&dmm_cache_lock);
                 return PBFS_ERR_Invalid_File_Or_Directory;
             }
 
             current_dmm_lba = uint128_to_u64(out->lba) + md.data_offset;
+			dmm_cache[++depth] = current_dmm_lba;
         }
     }
+
+	unlock_spinlock(&dmm_cache_lock);
     
 	if (out->type & METADATA_FLAG_SYMLINK) {
 		uint128_t psize = UINT128_ZERO;
@@ -488,11 +582,11 @@ static int find_dmm_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_l
 		char* buf = (char*)funcs.malloc(uint128_to_u64(psize) + sizeof(uint128_t));
 		if (!buf) return PBFS_ERR_Allocation_Failed;
 
-		o = pbfs_read(mnt, *out_lba, sizeof(uint128_t) + uint128_to_u64(psize), &buf);
+		o = pbfs_read(mnt, *out_lba, sizeof(uint128_t) + uint128_to_u64(psize), buf);
 		char* data = buf + sizeof(uint128_t);
 
 		o = find_dmm_entry((const char*)data, out, out_lba, mnt);
-		funcs.free(data);
+		funcs.free(buf);
 
 		return o;
 	}
@@ -1093,7 +1187,6 @@ int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_
     uint64_t e_lba = 0;
     int out = find_dmm_entry(path, &e, &e_lba, mnt);
     if (out != -1 && out != PBFS_RES_SUCCESS) return out;
-    if (out != -1) return PBFS_ERR_Invalid_Path;
     if (!(e.perms & PERM_READ)) return PBFS_ERR_Wrong_Permissions;
     
     PBFS_Metadata md = {0};
@@ -1101,42 +1194,38 @@ int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_
     out = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
     if (out != PBFS_RES_SUCCESS) return out;
 
-    uint64_t ext_lba = uint128_to_u64(md.extender_lba);
-    uint64_t ext_lba2 = ext_lba;
     uint64_t md_data_size = uint128_to_u64(md.data_size);
 
     if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
-    
-    uint64_t total_size = md_data_size;
-    while (ext_lba2 != 0) {
-        e_lba = ext_lba;
-        out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
-        if (out != PBFS_RES_SUCCESS) return out;
-        ext_lba = uint128_to_u64(md.extender_lba);
-        md_data_size = uint128_to_u64(md.data_size);
 
-        if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
-        total_size += md_data_size;
-    }
+	PBFS_Metadata md_t = md;
+	while (!uint128_is_zero(&md.extender_lba)) {
+        out = pbfs_read(mnt, uint128_to_u64(md_t.extender_lba), sizeof(PBFS_Metadata), &md_t);
+        if (out != PBFS_RES_SUCCESS) return out;
+        md_data_size += uint128_to_u64(md_t.data_size);
+		if (md_t.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+	}
     
-    uint8_t* data = funcs.malloc(total_size);
+    uint8_t* data = funcs.malloc(md_data_size);
     if (data == NULL) return PBFS_ERR_Allocation_Failed;
-    *data_size = total_size;
+    *data_size = md_data_size;
     *data_out = data;
 
-    out = pbfs_read(mnt, e_lba, md_data_size, data);
+    out = pbfs_read(mnt, md.data_offset + md_lba, uint128_to_u64(md.data_size), data);
     if (out != PBFS_RES_SUCCESS) return out;
     
-    while (ext_lba != 0) {
-        e_lba = ext_lba;
-        out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
+	md_t = md;
+	uint64_t ext_lba = 0;
+	uint64_t cOff = uint128_to_u64(md.data_size);
+    while (!uint128_is_zero(&md_t.extender_lba)) {
+		ext_lba = uint128_to_u64(md_t.extender_lba);
+        out = pbfs_read(mnt, ext_lba, sizeof(PBFS_Metadata), &md_t);
         if (out != PBFS_RES_SUCCESS) return out;
-        ext_lba = uint128_to_u64(md.extender_lba);
-        md_data_size = uint128_to_u64(md.data_size);
 
-        if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
-        out = pbfs_read(mnt, e_lba, md_data_size, data);
+        out = pbfs_read(mnt, md_t.data_offset + ext_lba, uint128_to_u64(md_t.data_size), data + cOff);
         if (out != PBFS_RES_SUCCESS) return out;
+
+		cOff += uint128_to_u64(md_t.data_size);
     }
 
     return PBFS_RES_SUCCESS;

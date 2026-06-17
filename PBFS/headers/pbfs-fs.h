@@ -17,6 +17,7 @@
 
 struct pbfs_funcs {
     void* (*malloc)(size_t size);
+	void* (*realloc)(void* ptr, size_t nsize);
     void (*free)(void* ptr);
 };
 
@@ -81,6 +82,10 @@ struct pbfs_mount {
     bool kernel_table_present;
 
     uint64_t partition_start_lba;
+
+	PBFS_Bitmap64* bitmaps;
+    uint64_t bitmap_count;
+	uint64_t bitmap_cap;
 };
 
 

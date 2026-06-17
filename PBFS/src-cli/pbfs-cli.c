@@ -371,7 +371,8 @@ int main(int argc, char** argv) {
     };
     struct pbfs_funcs funcs = {
         .free=free,
-        .malloc=malloc
+        .malloc=malloc,
+		.realloc=realloc
     };
 
     pbfs_init(&funcs);
