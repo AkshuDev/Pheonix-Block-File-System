@@ -68,7 +68,7 @@ static const char* kernel_flags_to_str(PBFS_Kernel_Flags flags) {
 	switch (flags) {
 		case KERNEL_FLAG_CHAINLOADED: return "Chainloaded";
 		case KERNEL_FLAG_CONNECTOR: return "Connected via PBFS Connector";
-		default: "None";
+		default: return "None";
 	}
 }
 static const char* file_type_to_str(PBFS_Metadata_Flags type) {
@@ -109,6 +109,42 @@ static void file_perms_to_str(PBFS_Permission_Flags perms, char* out, size_t siz
 static int pbfs_verify_header(PBFS_Header* hdr) {
     if (memcmp(hdr->magic, PBFS_MAGIC, PBFS_MAGIC_LEN) == 0) return PBFS_RES_SUCCESS;
     return PBFS_ERR_Invalid_Header;
+}
+
+static double normalize_size_according_to_unit(unsigned long long int size) {
+	unsigned int unit = 0;
+    double value = (double)size;
+
+    while (value >= 1024.0 && unit < 7) {
+        value /= 1024.0;
+        unit++;
+    }
+
+    return value;
+}
+
+static const char* get_size_unit(unsigned long long int size) {
+	static const char* units[] = {
+        "Bytes",
+        "Kilobytes",
+        "Megabytes",
+        "Gigabytes",
+        "Terabytes",
+        "Petabytes",
+        "Exabytes",
+        "Zettabytes",
+        "Yottabytes"
+    };
+
+    unsigned int unit = 0;
+	uint64_t sz = (uint64_t)size;
+
+    while (sz >= 1024 && unit < sizeof(units) / sizeof(units[0]) - 1) {
+        sz /= 1024;
+        unit++;
+    }
+
+    return units[unit];
 }
 
 // Lists a dir from the disk
@@ -204,57 +240,45 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
         return InvalidHeader;
     }
 
-    uint8_t* disk = (uint8_t*)calloc(1, hdr->block_size);
-    if (!disk) {
-        perror("Failed to allocate memory!\n");
-        free(hdr);
-        return AllocFailed;
-    }
-
     if (debug == 1) {
         if (hdr->kernel_table_lba < 1) {
             printf("Info: No Kernel Table Found\n");
         } else {
-            uint64_t kto = hdr->kernel_table_lba;
-            PBFS_Kernel_Table* kernel_table = (PBFS_Kernel_Table*)disk;
-
+			PBFS_Kernel_Entry kernels[128] = {0};
+			size_t kcount = 0;
+			pbfs_list_kernels(mnt, kernels, 128, &kcount);
+            
             printf("\n=== Kernel Table ===\n");
-            while (kto > 1) {
-                fseek(f, kto * hdr->block_size, SEEK_SET);
-                fread(disk, hdr->block_size, 1, f);
-
-                for (int i = 0; i < kernel_table->entry_count; i++) {
-                    PBFS_Kernel_Entry* entry = &kernel_table->entries[i];
-                    if (uint128_is_zero(&entry->count))
-                        continue;
-                    printf(
-                        "== Kernel Entry (%d) ==\n"
-                        "\tName: %.64s\n"
-                        "\tLBA: %lld\n"
-                        "\tCount: %lld\n"
-						"\tFlags: %s",
-                        i, entry->name,
-                        (unsigned long long int)uint128_to_u64(entry->lba),
-                        (unsigned long long int)uint128_to_u64(entry->count),
-						kernel_flags_to_str(entry->flags)
-                    );
-                }
-
-                kto = uint128_to_u64(kernel_table->extender_lba);
-            }
+			for (size_t i = 0; i < kcount; i++) {
+				PBFS_Kernel_Entry* entry = &kernels[i];
+				unsigned long long int size = (unsigned long long int)(uint128_to_u64(entry->count) * mnt->header64.block_size);
+				
+				printf(
+					"== Kernel Entry (%d) ==\n"
+					"\tName: %.64s\n"
+					"\tLBA: %llu\n"
+					"\tCount: %llu\n"
+					"\tFlags: %s\n"
+					"\tSize: %.2f %s\n",
+					i, entry->name,
+					(unsigned long long int)uint128_to_u64(entry->lba),
+					(unsigned long long int)uint128_to_u64(entry->count),
+					kernel_flags_to_str(entry->flags),
+					normalize_size_according_to_unit(size),
+					get_size_unit(size)
+				);
+			}
         }
 
         printf("=== Data ===\n");
         pbfs_list_dir(mnt, "/");
         free(hdr);
-        free(disk);
         return EXIT_SUCCESS;
     }
 
     if (debug) printf("Success!\n");
 
     free(hdr);
-    free(disk);
     return EXIT_SUCCESS;
 }
 
