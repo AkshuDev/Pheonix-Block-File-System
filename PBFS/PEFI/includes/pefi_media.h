@@ -9,6 +9,7 @@ PEFI_PACKED_STRUCT(typedef struct {
     BOOLEAN ReadOnly;
     BOOLEAN WriteCaching;
     UINT32 BlockSize;
+    UINT32 IoAlign;
     EFI_LBA LastBlock;
     EFI_LBA LowestAlignedLba;
     UINT32 LogicalBlocksPerPhysicalBlock;
