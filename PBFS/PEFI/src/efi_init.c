@@ -7,6 +7,7 @@ LIB PEFI_InternalState pefi_state = {0};
 
 EFI_BOOT_SERVICES *gBS = NULL;
 EFI_GUID gEfiBlockIoProtocolGuid = { 0x964e5b21, 0x6459, 0x11d2, { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } };
+EFI_GUID gEfiDevicePathProtocolGuid = {0x9576e91, 0x6d3f, 0x11d2, {0x8e, 0x39, 0x0, 0xa0, 0xc9, 0x69, 0x72, 0x3b }};
 
 LIB int InitalizeLib(EFI_SYSTEM_TABLE* SystemTable, EFI_HANDLE ImageHandle) {
     // Check if already initialized

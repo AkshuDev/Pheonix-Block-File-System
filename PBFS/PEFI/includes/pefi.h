@@ -206,4 +206,7 @@ typedef EFI_STATUS (EFIAPI *EFI_CREATE_EVENT) (IN UINT32 Type, IN EFI_TPL Notify
 
 typedef EFI_STATUS (EFIAPI *EFI_LOCATE_HANDLE)(IN EFI_LOCATE_SEARCH_TYPE SearchType, IN EFI_GUID *Protocol OPTIONAL, IN VOID *SearchKey OPTIONAL, IN OUT UINTN *BufferSize, OUT EFI_HANDLE *Buffer);
 
+#define EFI_DEVICE_PATH_PROTOCOL_GUID {0x9576e91, 0x6d3f, 0x11d2, {0x8e, 0x39, 0x0, 0xa0, 0xc9, 0x69, 0x72, 0x3b }}
+extern EFI_GUID gEfiDevicePathProtocolGuid;
+
 // Thanks to dox.ipxe.org for helping me resolve structs and more.
