@@ -66,7 +66,7 @@ typedef UINTN RETURN_STATUS;
 #define TRUE !FALSE
 
 #define EFI_ERROR(Status) (((INTN)(Status)) < 0)
-#define ENCODE_ERROR	(StatusCode)((RETURN_STATUS)(MAX_BIT | (StatusCode)))
+#define ENCODE_ERROR(StatusCode) ((RETURN_STATUS)(MAX_BIT | (StatusCode)))
 
 #ifdef _MSC_VER
   #define PEFI_PACKED_STRUCT(decl) __pragma(pack(push, 1)) decl __pragma(pack(pop))
