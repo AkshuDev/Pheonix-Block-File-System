@@ -23,6 +23,7 @@ typedef struct {
     EFI_GET_TIME GetTime;
     EFI_SET_TIME SetTime;
     EFI_GET_WAKEUP_TIME GetWakeupTime;
+    EFI_SET_WAKEUP_TIME SetWakeupTime;
     EFI_SET_VIRTUAL_ADDRESS_MAP SetVirtualAddressMap;
     EFI_CONVERT_POINTER ConvertPointer;
     EFI_GET_VARIABLE GetVariable;
