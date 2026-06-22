@@ -13,28 +13,37 @@ typedef struct EFI_GRAPHICS_OUTPUT_MODE_INFORMATION EFI_GRAPHICS_OUTPUT_MODE_INF
 typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE;
 typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL EFI_GRAPHICS_OUTPUT_PROTOCOL;
 
+typedef enum {
+    PixelRedGreenBlueReserved8BitPerColor,
+    PixelBlueGreenRedReserved8BitPerColor,
+    PixelBitMask,
+    PixelBltOnly,
+    PixelFormatMax
+} EFI_GRAPHICS_PIXEL_FORMAT;
+
 struct EFI_PIXEL_BITMASK{
-    uint32_t RedMask;
-    uint32_t GreenMask;
-    uint32_t BlueMask;
-    uint32_t ReservedMask;
+    UINT32 RedMask;
+    UINT32 GreenMask;
+    UINT32 BlueMask;
+    UINT32 ReservedMask;
 };
 
 struct EFI_GRAPHICS_OUTPUT_MODE_INFORMATION{
-    uint32_t Version;
-    uint32_t HorizontalResolution;
-    uint32_t VerticalResolution;
+    UINT32 Version;
+    UINT32 HorizontalResolution;
+    UINT32 VerticalResolution;
+    EFI_GRAPHICS_PIXEL_FORMAT PixelFormat;
     EFI_PIXEL_BITMASK PixelInformation;
-    uint32_t PixelsPerScanLine;
+    UINT32 PixelsPerScanLine;
 };
 
 struct EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE{
-    uint32_t MaxMode;
-    uint32_t Mode;
+    UINT32 MaxMode;
+    UINT32 Mode;
     EFI_GRAPHICS_OUTPUT_MODE_INFORMATION* Info;
-    uint64_t SizeOfInfo;
-    void* FrameBufferBase;
-    uint64_t FrameBufferSize;
+    UINTN SizeOfInfo;
+    EFI_PHYSICAL_ADDRESS FrameBufferBase;
+    UINTN FrameBufferSize;
 };
 
 struct EFI_GRAPHICS_OUTPUT_PROTOCOL{
