@@ -1130,6 +1130,46 @@ int pbfs_update_file(struct pbfs_mount* mnt, char* path, uint8_t* data, size_t d
     return pbfs_add(mnt, path, og_md.uid, og_md.gid, og_md.flags, og_md.ex_flags, data, data_size);
 }
 
+int pbfs_update_file_dmm(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* entry, uint8_t* data, size_t data_size) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+	if (strlen(path) < 1) return PBFS_ERR_Invalid_Path;
+    if (data_size < 1) return PBFS_ERR_Argument_Invalid;
+    if (data == NULL) return PBFS_ERR_Argument_Invalid;
+
+	if (entry->type != METADATA_FLAG_FILE) return PBFS_ERR_Wrong_Type;
+    if (!(entry->perms != PERM_WRITE)) return PBFS_ERR_Wrong_Permissions;
+
+    PBFS_Metadata og_md = {0};
+    PBFS_Metadata md = {0};
+    uint64_t e_lba = uint128_to_u64(entry->lba);
+    int out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &og_md);
+    memcpy(&md, &og_md, sizeof(PBFS_Metadata));
+    if (out != PBFS_RES_SUCCESS) return out;
+    uint64_t ext_lba = uint128_to_u64(md.extender_lba);
+
+    uint64_t md_data_size = uint128_to_u64(md.data_size);
+    if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+    for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
+        bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
+    }
+    
+    while (ext_lba != 0) {
+        e_lba = ext_lba;
+        out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
+        if (out != PBFS_RES_SUCCESS) return out;
+        ext_lba = uint128_to_u64(md.extender_lba);
+        md_data_size = uint128_to_u64(md.data_size);
+
+        if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+        for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
+            bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
+        }
+    }
+
+    remove_dmm_entry(mnt, path, e_lba);
+    return pbfs_add(mnt, path, og_md.uid, og_md.gid, og_md.flags, og_md.ex_flags, data, data_size);
+}
+
 int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_Flags new_permissions) {
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(path) < 1) return PBFS_ERR_No_Path;
@@ -1196,6 +1236,56 @@ int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_
 
     uint64_t md_data_size = uint128_to_u64(md.data_size);
 
+    if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+
+	PBFS_Metadata md_t = md;
+	while (!uint128_is_zero(&md.extender_lba)) {
+        out = pbfs_read(mnt, uint128_to_u64(md_t.extender_lba), sizeof(PBFS_Metadata), &md_t);
+        if (out != PBFS_RES_SUCCESS) return out;
+        md_data_size += uint128_to_u64(md_t.data_size);
+		if (md_t.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+	}
+    
+    uint8_t* data = funcs.malloc(md_data_size);
+    if (data == NULL) return PBFS_ERR_Allocation_Failed;
+    *data_size = md_data_size;
+    *data_out = data;
+
+    out = pbfs_read(mnt, md.data_offset + md_lba, uint128_to_u64(md.data_size), data);
+    if (out != PBFS_RES_SUCCESS) return out;
+    
+	md_t = md;
+	uint64_t ext_lba = 0;
+	uint64_t cOff = uint128_to_u64(md.data_size);
+    while (!uint128_is_zero(&md_t.extender_lba)) {
+		ext_lba = uint128_to_u64(md_t.extender_lba);
+        out = pbfs_read(mnt, ext_lba, sizeof(PBFS_Metadata), &md_t);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+        out = pbfs_read(mnt, md_t.data_offset + ext_lba, uint128_to_u64(md_t.data_size), data + cOff);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+		cOff += uint128_to_u64(md_t.data_size);
+    }
+
+    return PBFS_RES_SUCCESS;
+}
+
+int pbfs_read_file_dmm(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* entry, uint8_t** data_out, size_t* data_size) {
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+	if (strlen(path) < 1) return PBFS_ERR_Invalid_Path;
+    if (data_size == NULL) return PBFS_ERR_Argument_Invalid;
+    if (data_out == NULL) return PBFS_ERR_Argument_Invalid;
+
+	if (entry->type != METADATA_FLAG_FILE) return PBFS_ERR_Wrong_Type;
+    if (!(entry->perms & PERM_READ)) return PBFS_ERR_Wrong_Permissions;
+    
+    PBFS_Metadata md = {0};
+    uint64_t md_lba = uint128_to_u64(entry->lba);
+    int out = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    uint64_t md_data_size = uint128_to_u64(md.data_size);
     if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
 
 	PBFS_Metadata md_t = md;

@@ -89,31 +89,33 @@ struct pbfs_mount {
 };
 
 
-int pbfs_init(struct pbfs_funcs* functions) __attribute__((used));
-int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t boot_part_lba, uint64_t boot_part_size, uint64_t volume_id) __attribute__((used));
-int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt) __attribute__((used));
-int pbfs_read_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute__((used));
-int pbfs_write_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute__((used));
-int pbfs_read(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) __attribute__((used));
-int pbfs_write(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) __attribute__((used));
-int pbfs_flush(struct pbfs_mount* mnt) __attribute__((used));
-int pbfs_add(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBFS_Metadata_Flags type, PBFS_Permission_Flags permissions, uint8_t* data, size_t data_size) __attribute__((used));
-int pbfs_add_dir(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBFS_Permission_Flags permissions) __attribute__((used));
-int pbfs_remove(struct pbfs_mount* mnt, char* path) __attribute__((used));
-int pbfs_update_file(struct pbfs_mount* mnt, char* path, uint8_t* data, size_t data_size) __attribute__((used));
-int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_Flags new_permissions) __attribute__((used));
-int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_t* data_size) __attribute__((used));
-int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used));
-int pbfs_move(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used));
-int pbfs_rename(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used));
-int pbfs_find_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, struct pbfs_mount* mnt) __attribute__((used));
-int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Flags flags, uint8_t* data, size_t data_size) __attribute__((used));
-int pbfs_find_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Entry* kernel_e) __attribute__((used));
-int pbfs_get_kernel(struct pbfs_mount* mnt, PBFS_Kernel_Entry* kernel_e, uint8_t** data, size_t* data_size) __attribute__((used));
-int pbfs_remove_kernel(struct pbfs_mount* mnt, char* name) __attribute__((used));
-int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max_out_len, size_t* out_len) __attribute__((used));
-int pbfs_list_items(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* out, size_t max_out_len, size_t* out_len) __attribute__((used));
-int pbfs_add_bootloader(struct pbfs_mount* mnt, uint8_t* data, size_t data_size, uint8_t boot_part_type) __attribute__((used));
+int pbfs_init(struct pbfs_funcs* functions) __attribute__((used)); // Initialize PBFS
+int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t boot_part_lba, uint64_t boot_part_size, uint64_t volume_id) __attribute__((used)); // Format Mounted File System
+int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt) __attribute__((used)); // Mount File System
+int pbfs_read_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute__((used)); // Read a Block from Mounted File System
+int pbfs_write_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) __attribute__((used)); // Write a Block to Mounted File System
+int pbfs_read(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) __attribute__((used)); // Read bytes from Mounted File System
+int pbfs_write(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) __attribute__((used)); // Write bytes to Mounted File System
+int pbfs_flush(struct pbfs_mount* mnt) __attribute__((used)); // Flush Mounted File System
+int pbfs_add(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBFS_Metadata_Flags type, PBFS_Permission_Flags permissions, uint8_t* data, size_t data_size) __attribute__((used)); // Add a new file to Mounted File System
+int pbfs_add_dir(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBFS_Permission_Flags permissions) __attribute__((used)); // Add a new directory to Mounted File System
+int pbfs_remove(struct pbfs_mount* mnt, char* path) __attribute__((used)); // Remove a directory/file from Mounted File System
+int pbfs_update_file(struct pbfs_mount* mnt, char* path, uint8_t* data, size_t data_size) __attribute__((used)); // Update a file from Mounted File System with new data
+int pbfs_update_file_dmm(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* entry, uint8_t* data, size_t data_size) __attribute__((used)); // Update a file using DMM Entry for quick access, from Mounted File System with new data
+int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_Flags new_permissions) __attribute__((used)); // Change permissions of a directory/file from Mounted File System
+int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_t* data_size) __attribute__((used)); // Read a file from Mounted File System
+int pbfs_read_file_dmm(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* entry, uint8_t** data_out, size_t* data_size) __attribute__((used)); // Read a file using DMM Entry for quick access, from Mounted File System
+int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used)); // Copy a diectory/file from Mounted File System to another place
+int pbfs_move(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used)); // Move a directory/file from Mounted File System to another place
+int pbfs_rename(struct pbfs_mount* mnt, char* path, char* new_path) __attribute__((used)); // Rename a directory/file from Mounted File System
+int pbfs_find_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, struct pbfs_mount* mnt) __attribute__((used)); // Find a DMM entry based on path from Mounted File System
+int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Flags flags, uint8_t* data, size_t data_size) __attribute__((used)); // Add a new kernel entry to Mounted File System
+int pbfs_find_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Entry* kernel_e) __attribute__((used)); // Find a Kernel Entry from Mounted File System
+int pbfs_get_kernel(struct pbfs_mount* mnt, PBFS_Kernel_Entry* kernel_e, uint8_t** data, size_t* data_size) __attribute__((used)); // Get Kernel data from Kernel Entry, from Mounted File System
+int pbfs_remove_kernel(struct pbfs_mount* mnt, char* name) __attribute__((used)); // Remove a Kernel Entry from Mounted File System
+int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max_out_len, size_t* out_len) __attribute__((used)); // Get all Kernel Entries in Mounted File System
+int pbfs_list_items(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* out, size_t max_out_len, size_t* out_len) __attribute__((used)); // List all items under a path in Mounted File System
+int pbfs_add_bootloader(struct pbfs_mount* mnt, uint8_t* data, size_t data_size, uint8_t boot_part_type) __attribute__((used)); // Add a bootloader to Mounted File System
 #endif
 
 enum PBFS_Result {
