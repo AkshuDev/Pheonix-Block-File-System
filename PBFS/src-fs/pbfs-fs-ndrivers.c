@@ -264,7 +264,16 @@ static uint64_t bitmap_find_blocks(uint64_t start_lba, uint64_t blocks, struct p
                 run_length = 0;
             }
         }
-        if (current.extender_lba <= 1) return 0;
+        
+		if (current.extender_lba <= 1) {
+			uint64_t next_bitmap_start = (bitmap_idx + 1) * (PBFS_BITMAP_LIMIT * 8);
+			
+			if (next_bitmap_start >= mnt->header64.total_blocks) return 0;
+			uint64_t remaining = mnt->header64.total_blocks - next_bitmap_start;
+
+            if (remaining >= blocks) return next_bitmap_start;
+            return 0;
+		}
     }
 
     return 0;
