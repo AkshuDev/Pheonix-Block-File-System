@@ -19,19 +19,19 @@ typedef struct {
     uint32_t block_size;
 
     char disk_name[PBFS_DISK_NAME_LEN];
-} PBFS_Header64 __attribute__((packed));
+} PBFS_Header64;
 
 typedef struct {
     uint8_t bytes[PBFS_BITMAP_LIMIT];
     uint64_t extender_lba;
-} PBFS_Bitmap64 __attribute__((packed));
+} PBFS_Bitmap64;
 
 typedef struct {
     char name[32];
 	PBFS_Kernel_Flags flags;
     uint64_t lba;
     uint64_t count;
-} PBFS_Kernel_Entry64 __attribute__((packed));
+} PBFS_Kernel_Entry64;
 
 typedef struct {
     PBFS_Kernel_Entry64 entries[PBFS_KERNEL_TABLE_ENTRIES];
@@ -39,7 +39,7 @@ typedef struct {
 
     uint8_t reserved[12];
     uint64_t extender_lba;
-} PBFS_Kernel_Table64 __attribute__((packed));
+} PBFS_Kernel_Table64;
 
 typedef struct {
     char name[PBFS_MAX_NAME_LEN];
@@ -48,7 +48,7 @@ typedef struct {
     uint32_t perms;
     uint64_t created_timestamp;
     uint64_t modified_timestamp;
-} PBFS_DMM_Entry64 __attribute__((packed));
+} PBFS_DMM_Entry64;
 
 typedef struct {
     PBFS_DMM_Entry64 entries[PBFS_DMM_ENTRIES];
@@ -56,12 +56,12 @@ typedef struct {
     uint64_t entry_count;
     uint8_t reserved[88];
     uint64_t extender_lba;
-} PBFS_DMM64 __attribute__((packed));
+} PBFS_DMM64;
 
 typedef struct {
     uint64_t ext_id;
     uint64_t next_lba;
-} PBFS_Extender64 __attribute__((packed));
+} PBFS_Extender64;
 
 typedef struct {
     char name[PBFS_MAX_NAME_LEN];
@@ -80,7 +80,7 @@ typedef struct {
     uint32_t flags;
     uint32_t ex_flags;
     uint64_t extender_lba;
-} PBFS_Metadata64 __attribute__((packed));
+} PBFS_Metadata64;
 
 typedef struct {
     uint64_t hardware_bound_low;
@@ -90,4 +90,4 @@ typedef struct {
     uint16_t acl_entries_count;
 
     uint8_t reserved[2];
-} PBFS_Permission_Table64 __attribute__((packed));
+} PBFS_Permission_Table64;

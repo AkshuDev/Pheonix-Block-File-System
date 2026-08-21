@@ -18,7 +18,7 @@
 
 typedef struct {
     uint32_t part[4]; // [0] = LSB, [3] = MSB
-} uint128_t __attribute__((packed));
+} uint128_t;
 
 typedef struct {
     char magic[PBFS_MAGIC_LEN];
@@ -36,12 +36,12 @@ typedef struct {
     uint32_t block_size;
 
     char disk_name[32];
-} PBFS_Header __attribute__((packed));
+} PBFS_Header;
 
 typedef struct {
     uint8_t bytes[PBFS_BITMAP_LIMIT];
     uint128_t extender_lba;
-} PBFS_Bitmap __attribute__((packed));
+} PBFS_Bitmap;
 
 typedef enum {
     KERNEL_FLAG_CHAINLOADED = 1 << 0,
@@ -53,15 +53,15 @@ typedef struct {
 	PBFS_Kernel_Flags flags;
     uint128_t lba;
     uint128_t count;
-} PBFS_Kernel_Entry __attribute__((packed));
+} PBFS_Kernel_Entry;
 
 typedef struct {
     PBFS_Kernel_Entry entries[PBFS_KERNEL_TABLE_ENTRIES];
     uint64_t entry_count;
 
-    uint8_t reserved[12];
+    uint8_t reserved[8];
     uint128_t extender_lba;
-} PBFS_Kernel_Table __attribute__((packed));
+} PBFS_Kernel_Table;
 
 typedef struct {
     char name[PBFS_MAX_NAME_LEN];
@@ -70,7 +70,7 @@ typedef struct {
     uint32_t perms;
     uint64_t created_timestamp;
     uint64_t modified_timestamp;
-} PBFS_DMM_Entry __attribute__((packed));
+} PBFS_DMM_Entry;
 
 typedef struct {
     PBFS_DMM_Entry entries[PBFS_DMM_ENTRIES];
@@ -78,12 +78,12 @@ typedef struct {
     uint64_t entry_count;
     uint8_t reserved[72];
     uint128_t extender_lba;
-} PBFS_DMM __attribute__((packed));
+} PBFS_DMM;
 
 typedef struct {
     uint128_t ext_id;
     uint128_t next_lba;
-} PBFS_Extender __attribute__((packed));
+} PBFS_Extender;
 
 typedef enum {
     PERM_INVALID = 0,
@@ -122,7 +122,7 @@ typedef struct {
     uint32_t flags;
     uint32_t ex_flags;
     uint128_t extender_lba;
-} PBFS_Metadata __attribute__((packed));
+} PBFS_Metadata;
 
 typedef struct {
     uint128_t hardware_bound_low;
@@ -132,4 +132,4 @@ typedef struct {
     uint16_t acl_entries_count;
 
     uint8_t reserved[2];
-} PBFS_Permission_Table __attribute__((packed));
+} PBFS_Permission_Table;

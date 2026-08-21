@@ -147,17 +147,17 @@ static int pbfs_strlen(const char* s) {
     return i;
 }
 
-static void pbfs_strcpy(char* dst, const char* src) {
-    while (*src) {
-        *dst++ = *src++;
-    }
-    *dst = 0;
-}
+// static void pbfs_strcpy(char* dst, const char* src) {
+//     while (*src) {
+//         *dst++ = *src++;
+//     }
+//     *dst = 0;
+// }
 
-static void pbfs_memcpy(char* dst, const char* src, int n) {
-    for (int i = 0; i < n; i++)
-        dst[i] = src[i];
-}
+// static void pbfs_memcpy(char* dst, const char* src, int n) {
+//     for (int i = 0; i < n; i++)
+//         dst[i] = src[i];
+// }
 
 // Path features and stuff
 void path_normalize(char* path, char* out, int out_size) {
