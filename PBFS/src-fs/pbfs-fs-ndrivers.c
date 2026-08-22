@@ -961,49 +961,53 @@ int pbfs_write_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) {
 
 int pbfs_read(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) {
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+	if (size == 0) return PBFS_RES_SUCCESS;
 
-    uint8_t buf[mnt->header64.block_size];
-    uint64_t required_blocks = ALIGN_UP(size, mnt->header64.block_size) / mnt->header64.block_size;
-    size_t total_read_size = 0;
+	uint64_t block_size = mnt->header64.block_size;
+    uint64_t required_blocks = ALIGN_UP(size, block_size) / block_size;
+    size_t extra_size = (required_blocks * block_size) - size;
 
-    for (uint64_t i = 0; i < required_blocks; i++) {
-        uint64_t lba = mnt->partition_start_lba + fs_block + i;
-        mnt->dev->read_block(mnt->dev, lba, buf);
-
-        if (total_read_size + mnt->header64.block_size > size) {
-            uint64_t remaining_size = size - total_read_size;
-            memcpy(buffer + total_read_size, buf, remaining_size);
-            break;
-        } else {
-            memcpy(buffer + total_read_size, buf, mnt->header64.block_size);
-            total_read_size += mnt->header64.block_size;
-        }
+	if (extra_size == 0) {
+        if (mnt->dev->read(mnt->dev, mnt->partition_start_lba + fs_block, required_blocks, buffer) == 0) return PBFS_ERR_UNKNOWN;
+        return PBFS_RES_SUCCESS;
     }
+
+	uint8_t tail[block_size];
+
+    if (required_blocks > 1) {
+        if (mnt->dev->read(mnt->dev, mnt->partition_start_lba + fs_block, required_blocks - 1, buffer) == 0) return PBFS_ERR_UNKNOWN;
+    }
+    if (mnt->dev->read(mnt->dev, mnt->partition_start_lba + fs_block + required_blocks - 1, 1, tail) == 0) return PBFS_ERR_UNKNOWN;
+    memcpy((uint8_t*)buffer + ((required_blocks - 1) * block_size), tail, block_size - extra_size);
+
     return PBFS_RES_SUCCESS;
 }
 
 int pbfs_write(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) {
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (size == 0) return PBFS_RES_SUCCESS;
 
-    uint8_t buf[mnt->header64.block_size];
-    uint64_t required_blocks = ALIGN_UP(size, mnt->header64.block_size) / mnt->header64.block_size;
+    uint64_t block_size = mnt->header64.block_size;
+    uint64_t required_blocks = ALIGN_UP(size, block_size) / block_size;
+    uint64_t extra_size = (required_blocks * block_size) - size;
 
-    uint64_t total_write_size = 0;
-    for (uint64_t i = 0; i < required_blocks; i++) {
-        uint64_t lba = mnt->partition_start_lba + fs_block + i;
-
-        if (total_write_size + mnt->header64.block_size > size) {
-            uint64_t remaining_size = size - total_write_size;
-            memcpy(buf, buffer + total_write_size, remaining_size);
-            mnt->dev->write_block(mnt->dev, lba, buf);
-            break;
-        } else {
-            memcpy(buf, buffer + total_write_size, mnt->header64.block_size);
-            total_write_size += mnt->header64.block_size;
-        }
-
-        mnt->dev->write_block(mnt->dev, lba, buf);
+    if (extra_size == 0) {
+        if (mnt->dev->write(mnt->dev, mnt->partition_start_lba + fs_block, required_blocks, buffer) == 0) return PBFS_ERR_UNKNOWN;
+        return PBFS_RES_SUCCESS;
     }
+
+    uint8_t tail[block_size];
+    memset(tail, 0, block_size);
+
+    uint64_t tail_offset = (required_blocks - 1) * block_size;
+    uint64_t tail_size = block_size - extra_size;
+
+    memcpy(tail, (uint8_t*)buffer + tail_offset, tail_size);
+
+    if (required_blocks > 1) {
+        if (mnt->dev->write(mnt->dev, mnt->partition_start_lba + fs_block, required_blocks - 1, buffer) == 0) return PBFS_ERR_UNKNOWN;
+    }
+    if (mnt->dev->write(mnt->dev, mnt->partition_start_lba + fs_block + required_blocks - 1, 1, tail) == 0) return PBFS_ERR_UNKNOWN;
 
     return PBFS_RES_SUCCESS;
 }
