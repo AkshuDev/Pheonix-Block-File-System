@@ -63,7 +63,7 @@ Some permissions are -
 And more
 
 ## Inbuilt Metadata and File types
-PBDS also has inbuilt metdata and file types such as -
+PBFS also has inbuilt metdata and file types such as -
 1. File
 2. Directory
 3. System File
