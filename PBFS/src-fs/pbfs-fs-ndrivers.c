@@ -274,7 +274,9 @@ static uint64_t bitmap_find_blocks(uint64_t start_lba, uint64_t blocks, struct p
             if (remaining >= blocks) return next_bitmap_start;
             return 0;
 		}
-    }
+		
+		bitmap_idx++;
+	}
 
     return 0;
 }

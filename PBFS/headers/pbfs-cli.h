@@ -35,7 +35,7 @@
 "\t-btl/--bootloader <filepath>: Adds a bootloader to the image.\n" \
 "\t-rbp/--reserve_boot_partition <Start LBA (Aligned to 4096)> <Number of Blocks>: Reserves the specified number of blocks before the PBFS Header (MAX: 511)\n" \
 "\t-rkt/--reserve_kernel_table: Reserves a Kernel Table Block (Extendable).\n" \
-"\t-k/--kernel <path>: Adds a kernel to the kernel table if found. (\n" \
+"\t-k/--kernel <path>: Adds a kernel to the kernel table if found.\n" \
 "\t-rk/--remove_kernel <path>: Removes a kernel from the kernel table.\n" \
 "\t-t/--test: Tests and shows information about the disk.\n" \
 "\t-l/--list <path>: Lists a dir or shows file path if file exists.\n" \

@@ -1,3 +1,16 @@
+# === Colors ===
+CLR_RESET   := \033[0m
+
+CLR_BLACK   := \033[30m
+CLR_RED     := \033[31m
+CLR_GREEN   := \033[32m
+CLR_YELLOW  := \033[33m
+CLR_BLUE    := \033[34m
+CLR_MAGENTA := \033[35m
+CLR_CYAN    := \033[36m
+CLR_WHITE   := \033[37m
+
+# === Main Stuff ===
 BASE_DIR := ..
 
 SRC_DIR := .
@@ -31,23 +44,41 @@ LIB_WDRIVERS := $(BIN_DIR)/libpbfs-wdrivers.a
 .PHONY: all clean wdrivers ndrivers
 
 $(LIB_NDRIVERS): $(OBJS_NDRIVER) $(OBJS_UTILS)
+	@printf "$(CLR_YELLOW)-- Creating NDriver Library...$(CLR_RESET)\n"
+
 	@mkdir -p $(BIN_DIR)
-	$(AR) $(ARFLAGS) $@ $^
+	@$(AR) $(ARFLAGS) $@ $^
+
+	@printf "$(CLR_GREEN)-- Created at \"$@\"$(CLR_RESET)\n"
 
 $(LIB_WDRIVERS): $(OBJS_WDRIVER) $(OBJS_UTILS)
+	@printf "$(CLR_YELLOW)-- Creating WDriver Library...$(CLR_RESET)\n"
+
 	@mkdir -p $(BIN_DIR)
-	$(AR) $(ARFLAGS) $@ $^
+	@$(AR) $(ARFLAGS) $@ $^
+
+	@printf "$(CLR_GREEN)-- Created at \"$@\"$(CLR_RESET)\n"
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+	@printf "$(CLR_YELLOW)---- Compiling Source: \"$<\"$(CLR_RESET)\n"
+
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) -c $< -o $@
+
+	@printf "$(CLR_GREEN)---- Compiled to \"$@\"$(CLR_RESET)\n"
 
 $(BUILD_DIR)/%.o: $(TOOLS_DIR)/%.c
+	@printf "$(CLR_YELLOW)---- Compiling Tool: \"$<\"$(CLR_RESET)\n"
+
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) -c $< -o $@
+
+	@printf "$(CLR_GREEN)---- Compiled to \"$@\"$(CLR_RESET)\n"
 
 clean:
-	rm -rf $(BUILD_DIR) $(LIB_WDRIVERS) $(LIB_NDRIVERS)
+	@printf "$(CLR_RED)-- Cleaning...$(CLR_RESET)\n"
+	@rm -rf $(BUILD_DIR) $(LIB_WDRIVERS) $(LIB_NDRIVERS)
+	@printf "$(CLR_GREEN)-- Cleaned$(CLR_RESET)\n"
 
 wdrivers: $(LIB_WDRIVERS)
 ndrivers: $(LIB_NDRIVERS)
