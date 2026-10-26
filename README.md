@@ -66,7 +66,7 @@ And more
 PBFS also has inbuilt metdata and file types such as -
 1. File
 2. Directory
-3. System File
+3. System File (Read/Write/Execute of this file, informs the kernel, and uses the kernel's output if supplied)
 4. Symbolic Link
 5. PBFS File
 

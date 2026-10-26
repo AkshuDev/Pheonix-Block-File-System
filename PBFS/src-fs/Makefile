@@ -21,13 +21,11 @@ HEADER_DIR := $(BASE_DIR)/headers
 BIN_DIR := $(BASE_DIR)/build-fs
 BUILD_DIR := $(BIN_DIR)/objs
 
-SRCS_WDRIVER := 
-SRCS_NDRIVER := $(SRC_DIR)/pbfs-fs-ndrivers.c
+SRCS_NDRIVER := $(SRC_DIR)/pbfs-fs.c
 
-SRCS_UTILS := $(BASE_DIR)/tools/utils.c
+SRCS_UTILS := $(BASE_DIR)/tools/utils.c $(BASE_DIR)/tools/xxhash3_128b.c
 OBJS_UTILS := $(patsubst $(TOOLS_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS_UTILS))
 
-OBJS_WDRIVER := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS_WDRIVER))
 OBJS_NDRIVER := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS_NDRIVER))
 
 CC := gcc
@@ -39,20 +37,11 @@ CFLAGS := $(EXTRA) -O$(OPT_LEVEL) -I $(HEADER_DIR) -fno-stack-protector -Wall -W
 ARFLAGS := rcs
 
 LIB_NDRIVERS := $(BIN_DIR)/libpbfs-ndrivers.a
-LIB_WDRIVERS := $(BIN_DIR)/libpbfs-wdrivers.a
 
-.PHONY: all clean wdrivers ndrivers
+.PHONY: all clean ndrivers
 
 $(LIB_NDRIVERS): $(OBJS_NDRIVER) $(OBJS_UTILS)
 	@printf "$(CLR_YELLOW)-- Creating NDriver Library...$(CLR_RESET)\n"
-
-	@mkdir -p $(BIN_DIR)
-	@$(AR) $(ARFLAGS) $@ $^
-
-	@printf "$(CLR_GREEN)-- Created at \"$@\"$(CLR_RESET)\n"
-
-$(LIB_WDRIVERS): $(OBJS_WDRIVER) $(OBJS_UTILS)
-	@printf "$(CLR_YELLOW)-- Creating WDriver Library...$(CLR_RESET)\n"
 
 	@mkdir -p $(BIN_DIR)
 	@$(AR) $(ARFLAGS) $@ $^
@@ -77,9 +66,8 @@ $(BUILD_DIR)/%.o: $(TOOLS_DIR)/%.c
 
 clean:
 	@printf "$(CLR_RED)-- Cleaning...$(CLR_RESET)\n"
-	@rm -rf $(BUILD_DIR) $(LIB_WDRIVERS) $(LIB_NDRIVERS)
+	@rm -rf $(BUILD_DIR) $(LIB_NDRIVERS)
 	@printf "$(CLR_GREEN)-- Cleaned$(CLR_RESET)\n"
 
-wdrivers: $(LIB_WDRIVERS)
 ndrivers: $(LIB_NDRIVERS)
 all: $(LIB_NDRIVERS)

@@ -7,12 +7,13 @@
 #define PBFS_BITMAP_LIMIT 496
 #define PBFS_DISK_NAME_LEN 32
 
-#define PBFS_KERNEL_TABLE_ENTRIES 7
-#define PBFS_DMM_ENTRIES 4
+#define PBFS_KERNEL_TABLE_ENTRIES 6
+#define PBFS_DMM_ENTRIES 14
 
 #define PBFS_MAX_DMM_CHAIN 2048
 #define PBFS_MAX_KERNEL_CHAIN 2
 
+#define PBFS_MAX_KERNEL_NAME_LEN 32
 #define PBFS_MAX_NAME_LEN 64
 #define PBFS_MAX_PATH_LEN 4096
 
@@ -39,8 +40,14 @@ typedef struct {
 } PBFS_Header;
 
 typedef struct {
+	uint128_t next_lba;
+	uint128_t prev_lba;
+	uint128_t root_lba;
+} PBFS_Extender;
+
+typedef struct {
     uint8_t bytes[PBFS_BITMAP_LIMIT];
-    uint128_t extender_lba;
+    uint128_t extender_lba; // Once Created cannot be removed, and so 
 } PBFS_Bitmap;
 
 typedef enum {
@@ -49,7 +56,7 @@ typedef enum {
 } PBFS_Kernel_Flags;
 
 typedef struct {
-    char name[32];
+    char name[PBFS_MAX_KERNEL_NAME_LEN];
 	PBFS_Kernel_Flags flags;
     uint128_t lba;
     uint128_t count;
@@ -57,71 +64,63 @@ typedef struct {
 
 typedef struct {
     PBFS_Kernel_Entry entries[PBFS_KERNEL_TABLE_ENTRIES];
-    uint64_t entry_count;
+    uint8_t entry_count; // 255 Kernels only
 
-    uint8_t reserved[8];
-    uint128_t extender_lba;
+    PBFS_Extender extender;
 } PBFS_Kernel_Table;
 
 typedef struct {
-    char name[PBFS_MAX_NAME_LEN];
+    uint128_t hash;
     uint128_t lba;
-    uint32_t type;
-    uint32_t perms;
-    uint64_t created_timestamp;
-    uint64_t modified_timestamp;
 } PBFS_DMM_Entry;
 
 typedef struct {
     PBFS_DMM_Entry entries[PBFS_DMM_ENTRIES];
 
     uint64_t entry_count;
-    uint8_t reserved[72];
-    uint128_t extender_lba;
+    PBFS_Extender extender;
 } PBFS_DMM;
 
-typedef struct {
-    uint128_t ext_id;
-    uint128_t next_lba;
-} PBFS_Extender;
-
 typedef enum {
-    PERM_INVALID = 0,
-    PERM_READ = 1 << 0,
-    PERM_WRITE = 1 << 1,
-    PERM_EXEC = 1 << 2,
-    PERM_SYS = 1 << 3,
-    PERM_PROTECTED = 1 << 4,
-    PERM_LOCKED = 1 << 5 // No delete
+    PBFS_PERM_INVALID = 0,
+    PBFS_PERM_READ = (1 << 0),
+    PBFS_PERM_WRITE = (1 << 1),
+    PBFS_PERM_EXEC = (1 << 2),
+    PBFS_PERM_SYS = (1 << 3),
+    PBFS_PERM_LOCKED = (1 << 4), // No delete
+	PBFS_PERM_PROTECTED = (1 << 5) // No Delete, Read, Write, Execute, OR CHANGE OF PERMISSIONS
 } PBFS_Permission_Flags;
 
 typedef enum {
-    METADATA_FLAG_INVALID = 0,
-    METADATA_FLAG_RES = 1 << 0,
-    METADATA_FLAG_PBFS = 1 << 1,
-    METADATA_FLAG_SYS = 1 << 2,
-    METADATA_FLAG_FILE = 1 << 3,
-    METADATA_FLAG_DIR = 1 << 4,
-	METADATA_FLAG_SYMLINK = 1 << 5,
-} PBFS_Metadata_Flags;
+    PBFS_METADATA_TYPE_INVALID = 0,
+    PBFS_METADATA_TYPE_RES = (1 << 0),
+    PBFS_METADATA_TYPE_PBFS = (1 << 1),
+    PBFS_METADATA_TYPE_SYS = (1 << 2),
+    PBFS_METADATA_TYPE_FILE = (1 << 3),
+    PBFS_METADATA_TYPE_DIR = (1 << 4),
+	PBFS_METADATA_TYPE_SYMLINK = (1 << 5),
+} PBFS_Metadata_Types;
 
 typedef struct {
     char name[PBFS_MAX_NAME_LEN];
+
+	PBFS_Metadata_Types type;
     
     uint32_t uid;
     uint32_t gid;
 
-    uint8_t permission_offset; // Cur LBA + Offset = PERM LBA (if 0, metadata ex_flags used as perm flags)
+    uint128_t permission_lba;
 
     uint64_t created_timestamp;
     uint64_t modified_timestamp;
 
     uint128_t data_size;
-    uint32_t data_offset;
+    uint128_t data_lba;
 
     uint32_t flags;
-    uint32_t ex_flags;
-    uint128_t extender_lba;
+    PBFS_Permission_Flags permission_flags;
+	
+    PBFS_Extender extender;
 } PBFS_Metadata;
 
 typedef struct {
@@ -129,7 +128,5 @@ typedef struct {
     uint128_t hardware_bound_high;
     
     uint128_t access_log_lba;
-    uint16_t acl_entries_count;
-
-    uint8_t reserved[2];
+    uint32_t acl_entries_count;
 } PBFS_Permission_Table;

@@ -4,12 +4,7 @@
 #include <pbfs_structs.h>
 #undef PBFS_CLI
 
-#define PBFS_NDRIVERS
-#ifdef PBFS_WDRIVERS
-    #undef PBFS_WDRIVERS
-#endif
 #include <pbfs-fs.h>
-#undef PBFS_NDRIVERS
 
 #include <stdio.h>
 #include <string.h>
@@ -18,37 +13,37 @@
 #include <unistd.h>
 
 // Util Funcs for parsing perms and types
-static PBFS_Metadata_Flags parse_file_type(char* str) {
-    PBFS_Metadata_Flags type = METADATA_FLAG_INVALID;
+static PBFS_Metadata_Types parse_file_type(char* str) {
+    PBFS_Metadata_Types type = PBFS_METADATA_TYPE_INVALID;
     if (strcmp(str, "dir") == 0) {
-        type = METADATA_FLAG_DIR;
+        type = PBFS_METADATA_TYPE_DIR;
     } else if (strcmp(str, "file") == 0) {
-        type = METADATA_FLAG_FILE;
+        type = PBFS_METADATA_TYPE_FILE;
     } else if (strcmp(str, "res") == 0) {
-        type = METADATA_FLAG_RES;
+        type = PBFS_METADATA_TYPE_RES;
     } else if (strcmp(str, "sys") == 0) {
-        type = METADATA_FLAG_SYS;
+        type = PBFS_METADATA_TYPE_SYS;
     } else if (strcmp(str, "symlink") == 0) {
-		type = METADATA_FLAG_SYMLINK;
+		type = PBFS_METADATA_TYPE_SYMLINK;
 	}
 	return type;
 }
 static PBFS_Permission_Flags parse_file_perms(char* str) {
-    PBFS_Permission_Flags perms = PERM_INVALID;
-    char str_c[6]; // ensures proper parsing + speed due to switch
-    strncpy(str_c, str, sizeof(str_c));
+    PBFS_Permission_Flags perms = PBFS_PERM_INVALID;
+    char str_c[16]; // ensures proper parsing + speed due to switch
+    strcpy(str_c, str);
     size_t slen = strlen(str_c);
 
     for (uint64_t i = 0; i < slen; i++) {
         char c = str_c[i];
         switch (c) {
-            case 'r': perms |= PERM_READ; break;
-            case 'w': perms |= PERM_WRITE; break;
-            case 'e': perms |= PERM_EXEC; break;
-            case 'l': perms |= PERM_LOCKED; break;
-            case 'p': perms |= PERM_PROTECTED; break;
-            case 's': perms |= PERM_SYS; break;
-            default: perms = PERM_INVALID; return perms; // No mercy
+            case 'r': perms |= PBFS_PERM_READ; break;
+            case 'w': perms |= PBFS_PERM_WRITE; break;
+            case 'e': perms |= PBFS_PERM_EXEC; break;
+            case 'l': perms |= PBFS_PERM_LOCKED; break;
+            case 'p': perms |= PBFS_PERM_PROTECTED; break;
+            case 's': perms |= PBFS_PERM_SYS; break;
+            default: perms = PBFS_PERM_INVALID; return perms; // No mercy
         }
     }
 
@@ -71,36 +66,36 @@ static const char* kernel_flags_to_str(PBFS_Kernel_Flags flags) {
 		default: return "None";
 	}
 }
-static const char* file_type_to_str(PBFS_Metadata_Flags type) {
+static const char* file_type_to_str(PBFS_Metadata_Types type) {
     switch (type) {
-        case METADATA_FLAG_INVALID: return "Invalid";
-        case METADATA_FLAG_DIR: return "Directory";
-        case METADATA_FLAG_FILE: return "File";
-        case METADATA_FLAG_SYS: return "System";
-        case METADATA_FLAG_RES: return "Reserved";
-        case METADATA_FLAG_PBFS: return "PBFS";
-		case METADATA_FLAG_SYMLINK: return "Symbolic Link";
-        default: "Invalid";
+        case PBFS_METADATA_TYPE_INVALID: return "Invalid";
+        case PBFS_METADATA_TYPE_DIR: return "Directory";
+        case PBFS_METADATA_TYPE_FILE: return "File";
+        case PBFS_METADATA_TYPE_SYS: return "System";
+        case PBFS_METADATA_TYPE_RES: return "Reserved";
+        case PBFS_METADATA_TYPE_PBFS: return "PBFS";
+		case PBFS_METADATA_TYPE_SYMLINK: return "Symbolic Link";
+        default: return "Invalid";
     }
 }
 static void file_perms_to_str(PBFS_Permission_Flags perms, char* out, size_t size) {
-    if (perms == PERM_INVALID) {
+    if (perms == PBFS_PERM_INVALID) {
         strncpy(out, "Invalid", size);
         return;
     }
     if (size < 7) return;
     size_t off = 0;
-    if (perms & PERM_READ)
+    if (perms & PBFS_PERM_READ)
         out[off++] = 'r';
-    if (perms & PERM_WRITE)
+    if (perms & PBFS_PERM_WRITE)
         out[off++] = 'w';
-    if (perms & PERM_EXEC)
+    if (perms & PBFS_PERM_EXEC)
         out[off++] = 'e';
-    if (perms & PERM_SYS)
+    if (perms & PBFS_PERM_SYS)
         out[off++] = 's';
-    if (perms & PERM_LOCKED)
+    if (perms & PBFS_PERM_LOCKED)
         out[off++] = 'l';
-    if (perms & PERM_PROTECTED)
+    if (perms & PBFS_PERM_PROTECTED)
         out[off++] = 'p';
     out[off++] = '\0';
     return;
@@ -125,15 +120,15 @@ static double normalize_size_according_to_unit(unsigned long long int size) {
 
 static const char* get_size_unit(unsigned long long int size) {
 	static const char* units[] = {
-        "Bytes",
-        "Kilobytes",
-        "Megabytes",
-        "Gigabytes",
-        "Terabytes",
-        "Petabytes",
-        "Exabytes",
-        "Zettabytes",
-        "Yottabytes"
+        "B",
+        "KiB",
+        "MiB",
+        "GiB",
+        "TiB",
+        "PiB",
+        "EiB",
+        "ZiB",
+        "YiB"
     };
 
     unsigned int unit = 0;
@@ -167,15 +162,18 @@ int pbfs_list_dir(struct pbfs_mount* mnt, const char* path) {
     printf("Listing: %s\n", path);
 
     for (size_t i = 0; i < out_len; i++) {
+		PBFS_Metadata md = {0};
+		pbfs_get_metadata(mnt, &entries[i], &md, NULL);
+
         char perms[10];
-        file_perms_to_str(entries[i].perms, perms, sizeof(perms));
+        file_perms_to_str(md.permission_flags, perms, sizeof(perms));
 
         printf(
-            "\t%.64s [%s] (%s / at lba %lld)\n",
-            entries[i].name,
-            file_type_to_str(entries[i].type),
+            "\t%.64s [%s] (%s / at lba %llu)\n",
+            md.name,
+            file_type_to_str(md.type),
             perms,
-            uint128_to_u64(entries[i].lba)
+            (unsigned long long)uint128_to_u64(md.data_lba)
         );
     }
 
@@ -210,16 +208,16 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
     if (debug == 1) printf(
         "=== Header Information ===\n"
         "Magic: %.6s\n"
-        "Block Size: %d\nTotal Blocks: %lld\n"
-        "Disk Name: %s\nVolume ID: %lld\n"
-        "DMM Root LBA: %lld\nBitmap Root LBA: %lld\n"
-        "Kernel Table Root LBA: %lld\nData LBA: %lld\n"
-        "Boot Partition LBA: %lld\nBoot Partition Size: %lld\n",
+        "Block Size: %u\nTotal Blocks: %llu\n"
+        "Disk Name: %s\nVolume ID: %llu\n"
+        "DMM Root LBA: %llu\nBitmap Root LBA: %llu\n"
+        "Kernel Table Root LBA: %lld\nData LBA: %llu\n"
+        "Boot Partition LBA: %llu\nBoot Partition Size: %llu\n",
         hdr->magic,
-        (unsigned int)hdr->block_size, (unsigned long long int)uint128_to_u64(hdr->total_blocks),
-        (char*)hdr->disk_name, (unsigned long long int)uint128_to_u64(hdr->volume_id),
-        hdr->dmm_root_lba, hdr->bitmap_lba, hdr->kernel_table_lba, hdr->data_start_lba,
-        hdr->boot_partition_lba, hdr->boot_partition_size
+        (unsigned int)hdr->block_size, (unsigned long long)uint128_to_u64(hdr->total_blocks),
+        (char*)hdr->disk_name, (unsigned long long)uint128_to_u64(hdr->volume_id),
+        (unsigned long long)hdr->dmm_root_lba, (unsigned long long)hdr->bitmap_lba, (unsigned long long)hdr->kernel_table_lba, (unsigned long long)hdr->data_start_lba,
+        (unsigned long long)hdr->boot_partition_lba, (unsigned long long)hdr->boot_partition_size
     );
 
     if (hdr->bitmap_lba <= 1) {
@@ -254,15 +252,15 @@ int pbfs_test(struct pbfs_mount* mnt, FILE* f, uint8_t debug) {
 				unsigned long long int size = (unsigned long long int)(uint128_to_u64(entry->count) * mnt->header64.block_size);
 				
 				printf(
-					"== Kernel Entry (%d) ==\n"
+					"== Kernel Entry (%zu) ==\n"
 					"\tName: %.64s\n"
 					"\tLBA: %llu\n"
 					"\tCount: %llu\n"
 					"\tFlags: %s\n"
 					"\tSize: %.2f %s\n",
 					i, entry->name,
-					(unsigned long long int)uint128_to_u64(entry->lba),
-					(unsigned long long int)uint128_to_u64(entry->count),
+					(unsigned long long)uint128_to_u64(entry->lba),
+					(unsigned long long)uint128_to_u64(entry->count),
 					kernel_flags_to_str(entry->flags),
 					normalize_size_according_to_unit(size),
 					get_size_unit(size)
@@ -311,6 +309,11 @@ static int flush_ex(struct block_device* dev) {
     return 1;
 }
 
+static uint64_t get_timestamp(void) {
+	time_t t = time(NULL);
+	return t;
+}
+
 // Main function
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -319,7 +322,7 @@ int main(int argc, char** argv) {
     }
 
     uint8_t bootpart = 0;
-    int bootpartsize = 0;
+    uint64_t bootpartsize = 0;
     uint64_t bootpartlba = 0;
     uint8_t kerneltable = 0;
     uint8_t boot_partition_type = PBFS_BOOT_PART_TYPE_NONE;
@@ -331,7 +334,7 @@ int main(int argc, char** argv) {
     uint32_t gid = 0;
     uint32_t uid = 0;
     char perms[6];
-    char type[6];
+    char type[16];
 
     if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
       printf(PBFS_CLI_HELP);
@@ -372,7 +375,8 @@ int main(int argc, char** argv) {
     struct pbfs_funcs funcs = {
         .free=free,
         .malloc=malloc,
-		.realloc=realloc
+		.realloc=realloc,
+		.get_timestamp=get_timestamp
     };
 
     pbfs_init(&funcs);
@@ -426,8 +430,8 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--format") == 0) {
             printf("Formating Image...\n");
             printf(
-                "Block Size: %u\nTotal Blocks: %llu\nDisk Name: %s\nReserve Kernel Table: %s\nBoot Partition Size: %u\nBoot Partition LBA: %llu\n",
-                block_dev.block_size, block_dev.block_count, block_dev.name, kerneltable == 1 ? "True" : "False", bootpart == 1 ? bootpartsize : 0, bootpart == 1 ? bootpartlba : 0
+                "Block Size: %u\nTotal Blocks: %llu\nDisk Name: %s\nReserve Kernel Table: %s\nBoot Partition Size: %llu\nBoot Partition LBA: %llu\n",
+                block_dev.block_size, (unsigned long long)block_dev.block_count, block_dev.name, kerneltable == 1 ? "True" : "False", bootpart == 1 ? (unsigned long long)bootpartsize : 0ULL, bootpart == 1 ? (unsigned long long)bootpartlba : 0ULL
             );
             int out = pbfs_format(&block_dev, kerneltable, bootpartlba, bootpartsize, volume_id);
 
@@ -504,7 +508,14 @@ int main(int argc, char** argv) {
             fread(data, 1, data_size, f);
             fclose(f);
 
-            int out = pbfs_add(&mnt, name, uid, gid, parse_file_type(type), parse_file_perms(perms), data, data_size);
+			PBFS_Metadata md = {
+				.type = parse_file_type(type),
+				.permission_flags = parse_file_perms(perms),
+				.uid = uid,
+				.gid = gid
+			};
+
+            int out = pbfs_add(&mnt, name, &md, NULL, data, data_size);
             free(data);
             if (out != PBFS_RES_SUCCESS) {
                 fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
@@ -611,7 +622,14 @@ int main(int argc, char** argv) {
             char* filepath = argv[i + 1];
             i++;
             printf("Adding Dir [%s] to Image...\n", filepath);
-            int out = pbfs_add_dir(&mnt, filepath, uid, gid, parse_file_perms(perms));
+
+			PBFS_Metadata md = {
+				.permission_flags = parse_file_perms(perms),
+				.uid = uid,
+				.gid = gid
+			};
+
+            int out = pbfs_add_dir(&mnt, filepath, &md, NULL);
             if (out != PBFS_RES_SUCCESS) {
                 fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
@@ -736,7 +754,7 @@ int main(int argc, char** argv) {
                 fclose(fp);
                 return InvalidUsage;
             }
-            strncpy(name, argv[i + 1], sizeof(name));
+            strcpy(name, argv[i + 1]);
             i++;
         } else if (strcmp(argv[i], "--permissions") == 0) {
             if (i + 2 > argc) {
@@ -744,7 +762,7 @@ int main(int argc, char** argv) {
                 fclose(fp);
                 return InvalidUsage;
             }
-            strncpy(perms, argv[i + 1], sizeof(perms));
+            strcpy(perms, argv[i + 1]);
             i++;
         } else if (strcmp(argv[i], "--type") == 0) {
             if (i + 2 > argc) {
@@ -752,7 +770,7 @@ int main(int argc, char** argv) {
                 fclose(fp);
                 return InvalidUsage;
             }
-            strncpy(type, argv[i + 1], sizeof(type));
+            strcpy(type, argv[i + 1]);
             i++;
         } else if (strcmp(argv[i], "-btl") == 0 || strcmp(argv[i], "--bootloader") == 0) {
             if (mnt.active != true) {
@@ -814,7 +832,7 @@ int main(int argc, char** argv) {
                 return InvalidUsage;
             }
             bootpartlba = (uint64_t)atoll(argv[i + 1]);
-            bootpartsize = (int)atoi(argv[i + 2]);
+            bootpartsize = (uint64_t)atoll(argv[i + 2]);
             if (bootpartsize > block_dev.block_count) {
                 fprintf(stderr, "Bootloader Parition not in disk space?\n");
                 fclose(fp);
@@ -935,7 +953,6 @@ int main(int argc, char** argv) {
                 if (out != PBFS_RES_SUCCESS) {
                     fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
-                    fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
             }
@@ -963,7 +980,6 @@ int main(int argc, char** argv) {
                 if (out != PBFS_RES_SUCCESS) {
                     fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
                     fclose(fp);
-                    fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }
             }
@@ -988,7 +1004,6 @@ int main(int argc, char** argv) {
                 int out = pbfs_mount(&block_dev, &mnt);
                 if (out != PBFS_RES_SUCCESS) {
                     fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
-                    fclose(fp);
                     fclose(fp);
                     return PBFS_ERR_UNKNOWN;
                 }

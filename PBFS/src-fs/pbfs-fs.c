@@ -1,11 +1,7 @@
 #include <pbfs.h>
 #include <pbfs_structs.h>
 #include <pbfs_structs_64.h>
-
-#define PBFS_NDRIVERS
-#ifdef PBFS_WDRIVERS
-    #undef PBFS_WDRIVERS
-#endif
+#include <xxhash3_128b.h>
 
 #include <pbfs-fs.h>
 
@@ -88,13 +84,28 @@ static atomic_flag dmm_cache_lock = ATOMIC_FLAG_INIT;
 
 // static funcs
 static void lock_spinlock(atomic_flag* lock) {
+	if (!lock) return;
+
 	while (atomic_flag_test_and_set(lock)) {
 		__asm__ volatile("pause");
 	}
 }
 
 static void unlock_spinlock(atomic_flag* lock) {
+	if (!lock) return;
+
 	atomic_flag_clear(lock);
+}
+
+static uint128_t XXH128_to_uint128(XXH128_hash_t hash) {
+    uint128_t result;
+
+    result.part[0] = (uint32_t)(hash.low64 & 0xFFFFFFFFULL);
+    result.part[1] = (uint32_t)(hash.low64 >> 32);
+    result.part[2] = (uint32_t)(hash.high64 & 0xFFFFFFFFULL);
+    result.part[3] = (uint32_t)(hash.high64 >> 32);
+
+    return result;
 }
 
 static void crc32_init() {
@@ -114,19 +125,23 @@ static void crc32_init() {
 	unlock_spinlock(&pbfs_crc32_lock);
 }
 
-static uint32_t crc32(const void *data, size_t len) {
+static uint32_t crc32(const void* data, size_t len) {
     if (!crc32_initialized) crc32_init();
 
     uint32_t c = 0xFFFFFFFF;
-    const uint8_t *u8 = (const uint8_t *)data;
-    for (size_t i = 0; i < len; i++) {
-        c = crc32_table[(c ^ u8[i]) & 0xFF] ^ (c >> 8);
-    }
+	if (data && len > 0) {
+		const uint8_t* u8 = (const uint8_t*)data;
+		for (size_t i = 0; i < len; i++) {
+			c = crc32_table[(c ^ u8[i]) & 0xFF] ^ (c >> 8);
+		}
+	}
 
     return c ^ 0xFFFFFFFF;
 }
 
-void generate_guid(uint8_t *guid) {
+void generate_guid(uint8_t* guid) {
+	if (!guid) return;
+
     static uint64_t state = 0;
     if (state == 0) {
         // Seed with the CPU timestamp
@@ -150,11 +165,15 @@ void generate_guid(uint8_t *guid) {
 }
 
 static bool validate_hdr_magic(PBFS_Header* hdr) {
+	if (!hdr) return false;
+
     if (memcmp(hdr->magic, PBFS_MAGIC, PBFS_MAGIC_LEN) != 0) return false;
     return true;
 }
 
 static void hdr_to_hdr64(PBFS_Header* src, PBFS_Header64* dst) {
+	if (!src || !dst) return;
+
     memcpy(&dst->magic, &src->magic, PBFS_MAGIC_LEN);
     
     dst->volume_id = uint128_to_u64(src->volume_id);
@@ -174,42 +193,61 @@ static void hdr_to_hdr64(PBFS_Header* src, PBFS_Header64* dst) {
 }
 
 static void bitmap_to_bitmap64(PBFS_Bitmap* src, PBFS_Bitmap64* dst) {
+	if (!src || !dst) return;
+	
     memcpy(&dst->bytes, &src->bytes, sizeof(src->bytes));
     dst->extender_lba = uint128_to_u64(src->extender_lba);
 }
 
 static void dmmentry_to_dmmentry64(PBFS_DMM_Entry* src, PBFS_DMM_Entry64* dst) {
-    memcpy(&dst->name, &src->name, PBFS_MAX_NAME_LEN);
-    dst->lba = uint128_to_u64(src->lba);
-    dst->type = src->type;
-    dst->perms = src->perms;
-    dst->created_timestamp = src->created_timestamp;
-    dst->modified_timestamp = src->modified_timestamp;
+    if (!src || !dst) return;
+
+	dst->hash = src->hash;
+	dst->lba = uint128_to_u64(src->lba);
+}
+
+static void extender_to_extender64(PBFS_Extender* src, PBFS_Extender64* dst) {
+	if (!src || !dst) return;
+
+	dst->next_lba = uint128_to_u64(src->next_lba);
+	dst->prev_lba = uint128_to_u64(src->prev_lba);
+	dst->root_lba = uint128_to_u64(src->root_lba);
 }
 
 static void dmm_to_dmm64(PBFS_DMM* src, PBFS_DMM64* dst) {
+	if (!src || !dst) return;
+
     for (uint64_t i = 0; i < src->entry_count; i++) {
         dmmentry_to_dmmentry64(&src->entries[i], &dst->entries[i]);
     }
     dst->entry_count = src->entry_count;
-    dst->extender_lba = uint128_to_u64(src->extender_lba);
+    extender_to_extender64(&src->extender, &dst->extender);
 }
 
 static void kernelentry_to_kernelentry64(PBFS_Kernel_Entry* src, PBFS_Kernel_Entry64* dst) {
-    memcpy(&dst->name, &src->name, PBFS_MAX_NAME_LEN);
+	if (!src || !dst) return;
+
+    memcpy(&dst->name, &src->name, PBFS_MAX_KERNEL_NAME_LEN);
     dst->lba = uint128_to_u64(src->lba);
 }
 
 static void kernel_table_to_kernel_table64(PBFS_Kernel_Table* src, PBFS_Kernel_Table64* dst) {
+	if (!src || !dst) return;
+
     for (uint64_t i = 0; i < src->entry_count; i++) {
         kernelentry_to_kernelentry64(&src->entries[i], &dst->entries[i]);
     }
     dst->entry_count = src->entry_count;
-    dst->extender_lba = uint128_to_u64(src->extender_lba);
+    extender_to_extender64(&src->extender, &dst->extender);
 }
 
 static uint64_t bitmap_find_blocks(uint64_t start_lba, uint64_t blocks, struct pbfs_mount* mnt) {
-    if (blocks == 0) return 0;
+    if (!mnt || blocks == 0) return 0;
+
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return 0;
     
     uint64_t bitmap_idx = 0;
 
@@ -230,12 +268,15 @@ static uint64_t bitmap_find_blocks(uint64_t start_lba, uint64_t blocks, struct p
             else
                 lba = mnt->bitmaps[bitmap_idx - 1].extender_lba;
             if (bitmap_idx > 0 && mnt->bitmaps[bitmap_idx-1].extender_lba <= 1) return 0;
-            if (pbfs_read(mnt, lba, sizeof(PBFS_Bitmap), &tmp_bitmap) != PBFS_RES_SUCCESS) {
+            if (pbfs_read(mnt, uint128_from_u64(lba), sizeof(PBFS_Bitmap), &tmp_bitmap) != PBFS_RES_SUCCESS) {
                 return 0;
             }
 
             if (mnt->bitmap_cap <= mnt->bitmap_count + 2) {
+				lock_spinlock(&pbfs_funcs_lock);
 				void* nptr = funcs.realloc(mnt->bitmaps, (mnt->bitmap_count + 18) * sizeof(PBFS_Bitmap64));
+				unlock_spinlock(&pbfs_funcs_lock);
+
 				if (!nptr) return 0;
 
 				mnt->bitmaps = nptr;
@@ -282,6 +323,13 @@ static uint64_t bitmap_find_blocks(uint64_t start_lba, uint64_t blocks, struct p
 }
 
 static uint64_t bitmap_set(PBFS_Bitmap* current, uint64_t lba, uint64_t bitmap_lba, uint64_t bitmap_idx, struct pbfs_mount* mnt, uint8_t value) { // value: 1/0 (default: 0)
+	if (!current || !mnt) return 0;
+	
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return 0;
+	
     PBFS_Bitmap next = {0};
 
     while (bitmap_idx < PBFS_MAX_BITMAP_CHAIN(mnt)) {
@@ -295,7 +343,7 @@ static uint64_t bitmap_set(PBFS_Bitmap* current, uint64_t lba, uint64_t bitmap_l
             else
                 bitmap_bit_clear(current->bytes, local_bit);
 
-            if (pbfs_write(mnt, bitmap_lba, sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) {
+            if (pbfs_write(mnt, uint128_from_u64(bitmap_lba), sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) {
                 return 0;
             }
 
@@ -321,7 +369,7 @@ static uint64_t bitmap_set(PBFS_Bitmap* current, uint64_t lba, uint64_t bitmap_l
             if (!found) return 0;
 
             current->extender_lba = uint128_from_u64(new_block);
-            if (pbfs_write(mnt, bitmap_lba, sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) {
+            if (pbfs_write(mnt, uint128_from_u64(bitmap_lba), sizeof(PBFS_Bitmap), current) != PBFS_RES_SUCCESS) {
                 return 0;
             }
 
@@ -329,12 +377,15 @@ static uint64_t bitmap_set(PBFS_Bitmap* current, uint64_t lba, uint64_t bitmap_l
                 bitmap_to_bitmap64(current, &mnt->bitmaps[bitmap_idx]);
 
             memset(&next, 0, sizeof(next));
-            if (pbfs_write(mnt, new_block, sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) {
+            if (pbfs_write(mnt, uint128_from_u64(new_block), sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) {
                 return 0;
             }
 
             if (mnt->bitmap_count >= mnt->bitmap_cap) {
+				lock_spinlock(&pbfs_funcs_lock);
                 void *nptr = funcs.realloc(mnt->bitmaps, (mnt->bitmap_count + 18) * sizeof(PBFS_Bitmap64));
+				unlock_spinlock(&pbfs_funcs_lock);
+
                 if (!nptr) return 0;
 
                 mnt->bitmaps = nptr;
@@ -358,11 +409,14 @@ static uint64_t bitmap_set(PBFS_Bitmap* current, uint64_t lba, uint64_t bitmap_l
             memcpy(next.bytes, mnt->bitmaps[bitmap_idx + 1].bytes, sizeof(next.bytes));
             current = &next;
         } else {
-            if (pbfs_read(mnt, current64.extender_lba, sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) {
+            if (pbfs_read(mnt, uint128_from_u64(current64.extender_lba), sizeof(PBFS_Bitmap), &next) != PBFS_RES_SUCCESS) {
                 return 0;
             }
             if (mnt->bitmap_count >= mnt->bitmap_cap) {
+				lock_spinlock(&pbfs_funcs_lock);
                 void *nptr = funcs.realloc(mnt->bitmaps, (mnt->bitmap_count + 18) * sizeof(PBFS_Bitmap64));
+				unlock_spinlock(&pbfs_funcs_lock);
+
                 if (!nptr)
                     return 0;
 
@@ -386,7 +440,9 @@ static uint64_t bitmap_set(PBFS_Bitmap* current, uint64_t lba, uint64_t bitmap_l
     return 0;
 }
 
-static int add_dmm_entry(struct pbfs_mount* mnt, PBFS_DMM* cur_dmm, uint64_t cur_dmm_lba, uint64_t lba, char* name, PBFS_Metadata_Flags type, PBFS_Permission_Flags perms, uint64_t created_ts, uint64_t modified_ts) {
+static int add_dmm_entry(struct pbfs_mount* mnt, PBFS_DMM* cur_dmm, uint64_t cur_dmm_lba, uint64_t lba, char* name) {
+	if (!mnt || !cur_dmm || !name) return PBFS_ERR_Argument_Invalid;
+
     PBFS_DMM dmm = *cur_dmm;
     PBFS_DMM64 dmm64 = {0};
     dmm_to_dmm64(&dmm, &dmm64);
@@ -394,56 +450,54 @@ static int add_dmm_entry(struct pbfs_mount* mnt, PBFS_DMM* cur_dmm, uint64_t cur
     PBFS_DMM64* current64 = &dmm64;
     uint64_t cur_lba = cur_dmm_lba;
 
+	XXH128_hash_t xhash = XXH3_128bits(name, strlen(name));
+	uint128_t hash = XXH128_to_uint128(xhash);
+
     for (int depth = 0; depth < PBFS_MAX_DMM_CHAIN; depth++) {
         // If there is space in current DMM, add the entry
         if (current->entry_count < PBFS_DMM_ENTRIES) {
             PBFS_DMM_Entry* entry = &current->entries[current->entry_count];
             entry->lba = uint128_from_u64(lba);
-            entry->type = type;
-            entry->created_timestamp = created_ts;
-            entry->modified_timestamp = modified_ts;
-            entry->perms = perms;
-            strncpy(entry->name, name, sizeof(entry->name) - 1);
-            entry->name[sizeof(entry->name) - 1] = '\0';
+            entry->hash = hash;
             current->entry_count++;
 
-            return pbfs_write(mnt, cur_lba, sizeof(PBFS_DMM), current);
+            return pbfs_write(mnt, uint128_from_u64(cur_lba), sizeof(PBFS_DMM), current);
         }
 
         // If current DMM is full, check for extender
-        if (current64->extender_lba > 0) {
-            cur_lba = current64->extender_lba;
-            int out = pbfs_read(mnt, cur_lba, sizeof(PBFS_DMM), &dmm);
+        if (current64->extender.next_lba > 0) {
+            cur_lba = current64->extender.next_lba;
+
+            int out = pbfs_read(mnt, uint128_from_u64(cur_lba), sizeof(PBFS_DMM), &dmm);
             if (out != PBFS_RES_SUCCESS) return out;
+
 			dmm_to_dmm64(&dmm, &dmm64);
             continue;
         }
 
         // Need to allocate a new extender block
         PBFS_DMM new_extender = {0};
+		new_extender.extender.prev_lba = uint128_from_u64(cur_lba);
+		new_extender.extender.root_lba = current->extender.root_lba;
         new_extender.entry_count = 1;
+
         PBFS_DMM_Entry* entry = &new_extender.entries[0];
         entry->lba = uint128_from_u64(lba);
-        entry->type = type;
-        entry->created_timestamp = created_ts;
-        entry->modified_timestamp = modified_ts;
-        entry->perms = perms;
-        strncpy(entry->name, name, sizeof(entry->name) - 1);
-        entry->name[sizeof(entry->name) - 1] = '\0';
+        entry->hash = hash;
 
         uint64_t new_ext_lba = bitmap_find_blocks(mnt->header64.data_start_lba, 1, mnt);
         if (new_ext_lba == 0) return PBFS_ERR_No_Space_Left;
 
         // Write new extender to disk
-        int out = pbfs_write(mnt, new_ext_lba, sizeof(PBFS_DMM), &new_extender);
+        int out = pbfs_write(mnt, uint128_from_u64(new_ext_lba), sizeof(PBFS_DMM), &new_extender);
         if (out != PBFS_RES_SUCCESS) return out;
         bitmap_set(&mnt->root_bitmap, new_ext_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
 
         // Link current DMM to extender
-        current->extender_lba = uint128_from_u64(new_ext_lba);
-		current64->extender_lba = new_ext_lba;
+        current->extender.next_lba = uint128_from_u64(new_ext_lba);
+		current64->extender.next_lba = new_ext_lba;
 
-        out = pbfs_write(mnt, cur_lba, sizeof(PBFS_DMM), current);
+        out = pbfs_write(mnt, uint128_from_u64(cur_lba), sizeof(PBFS_DMM), current);
         if (out != PBFS_RES_SUCCESS) return out;
 
         return PBFS_RES_SUCCESS;
@@ -453,6 +507,8 @@ static int add_dmm_entry(struct pbfs_mount* mnt, PBFS_DMM* cur_dmm, uint64_t cur
 }
 
 static int remove_dmm_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur_dmm_lba) {
+	if (!mnt || !name_) return PBFS_ERR_Argument_Invalid;
+
 	PBFS_DMM parent_dmm = {0};
 	uint64_t parent_lba = 0;
 	bool parent_valid = false;
@@ -463,17 +519,28 @@ static int remove_dmm_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur_dm
     char name[PBFS_MAX_NAME_LEN];
     path_basename(name_, name, PBFS_MAX_NAME_LEN);
 
+	XXH128_hash_t xhash = XXH3_128bits(name, strlen(name));
+	uint128_t hash = XXH128_to_uint128(xhash);
+
     for (int depth = 0; depth < PBFS_MAX_DMM_CHAIN; depth++) {
-        int out = pbfs_read(mnt, current_lba, sizeof(PBFS_DMM), &dmm);
+        int out = pbfs_read(mnt, uint128_from_u64(current_lba), sizeof(PBFS_DMM), &dmm);
         if (out != PBFS_RES_SUCCESS) return out;
 
 		if (dmm.entry_count > PBFS_DMM_ENTRIES) return PBFS_ERR_DMM_Corrupted;
 
         int found_idx = -1;
         for (uint32_t i = 0; i < dmm.entry_count; i++) {
-            if (strcmp(dmm.entries[i].name, name) == 0) {
-                found_idx = i;
-                break;
+			if (UINT128_EQ(dmm.entries[i].hash, hash)) {
+				// Cross-Check once more
+
+				PBFS_Metadata md = {0};
+				out = pbfs_get_metadata(mnt, &dmm.entries[i], &md, NULL);
+				if (out != PBFS_RES_SUCCESS) continue;
+
+				if (strcmp(md.name, name) == 0) {
+					found_idx = i;
+					break;
+				}
             }
         }
 
@@ -490,29 +557,29 @@ static int remove_dmm_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur_dm
 				if (parent_valid) {
 					uint64_t free_lba = current_lba;
 					
-					if (UINT128_GT(dmm.extender_lba, UINT128_ZERO)) {
+					if (UINT128_GT(dmm.extender.next_lba, UINT128_ZERO)) {
 						// In Middle of chain
-						parent_dmm.extender_lba = dmm.extender_lba;
+						parent_dmm.extender.next_lba = dmm.extender.next_lba;
 					} else {
 						// End of chain
-						parent_dmm.extender_lba = UINT128_ZERO;
+						parent_dmm.extender.next_lba = UINT128_ZERO;
 					}
 
-					int out = pbfs_write(mnt, parent_lba, sizeof(PBFS_DMM), &parent_dmm);
+					int out = pbfs_write(mnt, uint128_from_u64(parent_lba), sizeof(PBFS_DMM), &parent_dmm);
 					if (out != PBFS_RES_SUCCESS) return out;
 					return bitmap_set(&mnt->root_bitmap, free_lba, mnt->header64.bitmap_lba, 0, mnt, 0) == free_lba ? PBFS_RES_SUCCESS : PBFS_ERR_UNKNOWN;
 				}
 			}
 
             // Write updated DMM block
-            return pbfs_write(mnt, current_lba, sizeof(PBFS_DMM), &dmm);
+            return pbfs_write(mnt, uint128_from_u64(current_lba), sizeof(PBFS_DMM), &dmm);
         }
 
-        if (UINT128_GT(dmm.extender_lba, UINT128_ZERO)) {
+        if (UINT128_GT(dmm.extender.next_lba, UINT128_ZERO)) {
 			parent_lba = current_lba;
 			parent_dmm = dmm;
 			parent_valid = true;
-            current_lba = uint128_to_u64(dmm.extender_lba);
+            current_lba = uint128_to_u64(dmm.extender.next_lba);
         } else {
             break;
         }
@@ -521,7 +588,14 @@ static int remove_dmm_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur_dm
     return PBFS_ERR_File_Not_Found;
 }
 
-static int find_dmm_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, struct pbfs_mount* mnt) {
+static int find_dmm_entry(struct pbfs_mount* mnt, const char* path, PBFS_DMM_Entry* out, PBFS_Metadata* out_md, PBFS_Permission_Table* out_perms, uint64_t* out_lba) {
+	if (!mnt || !path || !out_md || !out_lba) return PBFS_ERR_Argument_Invalid;
+	
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return PBFS_ERR_Not_Initialized;
+
     char normalized[PBFS_MAX_PATH_LEN];
     path_normalize((char*)path, normalized, PBFS_MAX_PATH_LEN);
 
@@ -537,7 +611,8 @@ static int find_dmm_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_l
     char part[PBFS_MAX_NAME_LEN];
     int depth = 0;
 	int path_idx = 0;
-    int found = 0;
+
+    bool found = false;
 
     while (path_idx < PBFS_MAX_DMM_CHAIN) {
         path_part(normalized, path_idx++, part, PBFS_MAX_NAME_LEN);
@@ -551,23 +626,33 @@ static int find_dmm_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_l
 			continue;
 		}
 
-        found = 0;
+        found = false;
         uint64_t iter_lba = current_dmm_lba;
         for (int chain = 0; chain < PBFS_MAX_DMM_CHAIN && iter_lba > 0; chain++) {
             PBFS_DMM dmm;
-            int out_res = pbfs_read(mnt, iter_lba, sizeof(PBFS_DMM), &dmm);
+            int out_res = pbfs_read(mnt, uint128_from_u64(iter_lba), sizeof(PBFS_DMM), &dmm);
             if (out_res != PBFS_RES_SUCCESS) {unlock_spinlock(&dmm_cache_lock); return out_res;}
 
             for (uint32_t i = 0; i < dmm.entry_count; i++) {
-                if (strcmp(dmm.entries[i].name, part) == 0) {
-                    *out = dmm.entries[i];
-                    *out_lba = iter_lba;
-                    found = 1;
-                    break;
-                }
+				XXH128_hash_t xhash = XXH3_128bits(part, strlen(part));
+				uint128_t hash = XXH128_to_uint128(xhash);
+
+				if (UINT128_EQ(hash, dmm.entries[i].hash)) {
+					// Cross-Check Once more
+
+					out_res = pbfs_get_metadata(mnt, &dmm.entries[i], out_md, out_perms);
+					if (out_res != PBFS_RES_SUCCESS) continue;
+
+					if (strcmp(out_md->name, part) == 0) {
+						*out = dmm.entries[i];
+						*out_lba = uint128_to_u64(dmm.entries->lba);
+						found = true;
+						break;
+					}
+				}
             }
             if (found) break;
-            iter_lba = uint128_to_u64(dmm.extender_lba);
+            iter_lba = uint128_to_u64(dmm.extender.next_lba);
         }
 		if (!found && iter_lba > 0) {
 			unlock_spinlock(&dmm_cache_lock);
@@ -580,35 +665,39 @@ static int find_dmm_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_l
         char next_part[PBFS_MAX_NAME_LEN];
         path_part(normalized, path_idx, next_part, PBFS_MAX_NAME_LEN);
         if (strlen(next_part) > 0) {
-            if (!(out->type & METADATA_FLAG_DIR)) {unlock_spinlock(&dmm_cache_lock); return PBFS_ERR_Invalid_Path;}
-            PBFS_Metadata md = {0};
-            int out_res = pbfs_read(mnt, uint128_to_u64(out->lba), sizeof(PBFS_Metadata), &md);
-            if (out_res != PBFS_RES_SUCCESS) {unlock_spinlock(&dmm_cache_lock); return out_res;}
-            if (md.data_offset < 1) {
+            if (!(out_md->type & PBFS_METADATA_TYPE_DIR)) {unlock_spinlock(&dmm_cache_lock); return PBFS_ERR_Invalid_Path;}
+            
+			if (uint128_to_u64(out_md->data_lba) <= PBFS_HDR_START_LBA) {
 				unlock_spinlock(&dmm_cache_lock);
                 return PBFS_ERR_Invalid_File_Or_Directory;
             }
 
-            current_dmm_lba = uint128_to_u64(out->lba) + md.data_offset;
+            current_dmm_lba = uint128_to_u64(out_md->data_lba);
 			dmm_cache[++depth] = current_dmm_lba;
         }
     }
 
 	unlock_spinlock(&dmm_cache_lock);
     
-	if (out->type & METADATA_FLAG_SYMLINK) {
+	if (out_md->type & PBFS_METADATA_TYPE_SYMLINK) {
 		uint128_t psize = UINT128_ZERO;
-		int o = pbfs_read(mnt, *out_lba, sizeof(uint128_t), &psize);
+		int o = pbfs_read(mnt, out_md->data_lba, sizeof(uint128_t), &psize);
 		if (o != PBFS_RES_SUCCESS) return o;
 
+		lock_spinlock(&pbfs_funcs_lock);
 		char* buf = (char*)funcs.malloc(uint128_to_u64(psize) + sizeof(uint128_t));
+		unlock_spinlock(&pbfs_funcs_lock);
+
 		if (!buf) return PBFS_ERR_Allocation_Failed;
 
-		o = pbfs_read(mnt, *out_lba, sizeof(uint128_t) + uint128_to_u64(psize), buf);
+		o = pbfs_read(mnt, out_md->data_lba, sizeof(uint128_t) + uint128_to_u64(psize), buf);
 		char* data = buf + sizeof(uint128_t);
 
-		o = find_dmm_entry((const char*)data, out, out_lba, mnt);
+		o = find_dmm_entry(mnt, (const char*)data, out, out_md, out_perms, out_lba);
+
+		lock_spinlock(&pbfs_funcs_lock);
 		funcs.free(buf);
+		unlock_spinlock(&pbfs_funcs_lock);
 
 		return o;
 	}
@@ -616,6 +705,8 @@ static int find_dmm_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_l
 }
 
 static int add_kernel_entry(struct pbfs_mount* mnt, PBFS_Kernel_Table* cur_kt, uint64_t cur_kt_lba, uint64_t lba, uint64_t blocks, const char* name, PBFS_Kernel_Flags flags) {
+	if (!mnt || !cur_kt || !name) return PBFS_ERR_Argument_Invalid;
+
     PBFS_Kernel_Table kt = *cur_kt;
     PBFS_Kernel_Table64 kt64 = {0};
     kernel_table_to_kernel_table64(&kt, &kt64);
@@ -634,19 +725,22 @@ static int add_kernel_entry(struct pbfs_mount* mnt, PBFS_Kernel_Table* cur_kt, u
             entry->name[sizeof(entry->name) - 1] = '\0';
             current->entry_count++;
 
-            return pbfs_write(mnt, cur_lba, sizeof(PBFS_Kernel_Table), current);
+            return pbfs_write(mnt, uint128_from_u64(cur_lba), sizeof(PBFS_Kernel_Table), current);
         }
 
         // If current KT is full, check for extender
-        if (current64->extender_lba > 0) {
-            cur_lba = current64->extender_lba;
-            int out = pbfs_read(mnt, cur_lba, sizeof(PBFS_Kernel_Table), &kt);
+        if (current64->extender.next_lba > 0) {
+            cur_lba = current64->extender.next_lba;
+            int out = pbfs_read(mnt, uint128_from_u64(cur_lba), sizeof(PBFS_Kernel_Table), &kt);
             if (out != PBFS_RES_SUCCESS) return out;
             continue;
         }
 
         // Need to allocate a new extender block
         PBFS_Kernel_Table new_extender = {0};
+		new_extender.extender.prev_lba = uint128_from_u64(cur_lba);
+		new_extender.extender.root_lba = current->extender.root_lba;
+
         new_extender.entry_count = 1;
         PBFS_Kernel_Entry* entry = &new_extender.entries[0];
         entry->lba = uint128_from_u64(lba);
@@ -659,14 +753,14 @@ static int add_kernel_entry(struct pbfs_mount* mnt, PBFS_Kernel_Table* cur_kt, u
         if (new_ext_lba == 0) return PBFS_ERR_No_Space_Left;
 
         // Write new extender to disk
-        int out = pbfs_write(mnt, new_ext_lba, sizeof(PBFS_Kernel_Table), &new_extender);
+        int out = pbfs_write(mnt, uint128_from_u64(new_ext_lba), sizeof(PBFS_Kernel_Table), &new_extender);
         if (out != PBFS_RES_SUCCESS) return out;
         bitmap_set(&mnt->root_bitmap, new_ext_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
 
         // Link current DMM to extender
-        current->extender_lba = uint128_from_u64(new_ext_lba);
+        current->extender.next_lba = uint128_from_u64(new_ext_lba);
 
-        out = pbfs_write(mnt, cur_lba, sizeof(PBFS_Kernel_Table), current);
+        out = pbfs_write(mnt, uint128_from_u64(cur_lba), sizeof(PBFS_Kernel_Table), current);
         if (out != PBFS_RES_SUCCESS) return out;
 
         return PBFS_RES_SUCCESS;
@@ -676,6 +770,8 @@ static int add_kernel_entry(struct pbfs_mount* mnt, PBFS_Kernel_Table* cur_kt, u
 }
 
 static int remove_kernel_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur_kt_lba) {
+	if (!mnt || !name_) return PBFS_ERR_Argument_Invalid;
+
 	PBFS_Kernel_Table parent_kt = {0};
 	uint64_t parent_lba = 0;
 	bool parent_valid = false;
@@ -687,13 +783,13 @@ static int remove_kernel_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur
     path_basename(name_, name, PBFS_MAX_NAME_LEN);
 
     for (int depth = 0; depth < PBFS_MAX_KERNEL_CHAIN; depth++) {
-        int out = pbfs_read(mnt, current_lba, sizeof(PBFS_Kernel_Table), &kt);
+        int out = pbfs_read(mnt, uint128_from_u64(current_lba), sizeof(PBFS_Kernel_Table), &kt);
         if (out != PBFS_RES_SUCCESS) return out;
 
 		if (kt.entry_count > PBFS_KERNEL_TABLE_ENTRIES) return PBFS_ERR_Kernel_Table_Corrupted;
 
         int found_idx = -1;
-        for (uint32_t i = 0; i < kt.entry_count; i++) {
+        for (uint32_t i = 0; i < (uint32_t)kt.entry_count; i++) {
             if (strcmp(kt.entries[i].name, name) == 0) {
                 found_idx = i;
                 break;
@@ -702,7 +798,7 @@ static int remove_kernel_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur
 
         if (found_idx != -1) {
             // Shift entries left to fill the gap
-            for (uint32_t i = found_idx; i < kt.entry_count - 1; i++) {
+            for (uint32_t i = found_idx; i < (uint32_t)kt.entry_count - 1; i++) {
                 kt.entries[i] = kt.entries[i + 1];
             }
             kt.entry_count--;
@@ -712,29 +808,29 @@ static int remove_kernel_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur
 				if (parent_valid) {
 					uint64_t free_lba = current_lba;
 					
-					if (UINT128_GT(kt.extender_lba, UINT128_ZERO)) {
+					if (UINT128_GT(kt.extender.next_lba, UINT128_ZERO)) {
 						// In Middle of chain
-						parent_kt.extender_lba = kt.extender_lba;
+						parent_kt.extender.next_lba = kt.extender.next_lba;
 					} else {
 						// End of chain
-						parent_kt.extender_lba = UINT128_ZERO;
+						parent_kt.extender.next_lba = UINT128_ZERO;
 					}
 
-					int out = pbfs_write(mnt, parent_lba, sizeof(PBFS_Kernel_Table), &parent_kt);
+					int out = pbfs_write(mnt, uint128_from_u64(parent_lba), sizeof(PBFS_Kernel_Table), &parent_kt);
 					if (out != PBFS_RES_SUCCESS) return out;
 					return bitmap_set(&mnt->root_bitmap, free_lba, mnt->header64.bitmap_lba, 0, mnt, 0) == free_lba ? PBFS_RES_SUCCESS : PBFS_ERR_UNKNOWN;
 				}
 			}
 
             // Write updated KT block
-            return pbfs_write(mnt, current_lba, sizeof(PBFS_Kernel_Table), &kt);
+            return pbfs_write(mnt, uint128_from_u64(current_lba), sizeof(PBFS_Kernel_Table), &kt);
         }
 
-        if (UINT128_GT(kt.extender_lba, UINT128_ZERO)) {
+        if (UINT128_GT(kt.extender.next_lba, UINT128_ZERO)) {
 			parent_lba = current_lba;
 			parent_kt = kt;
 			parent_valid = true;
-            current_lba = uint128_to_u64(kt.extender_lba);
+            current_lba = uint128_to_u64(kt.extender.next_lba);
         } else {
             break;
         }
@@ -743,7 +839,9 @@ static int remove_kernel_entry(struct pbfs_mount* mnt, char* name_, uint64_t cur
     return PBFS_ERR_File_Not_Found;
 }
 
-static int find_kernel_entry(const char* path, PBFS_Kernel_Entry* out, uint64_t* out_lba, struct pbfs_mount* mnt) {
+static int find_kernel_entry(struct pbfs_mount* mnt, const char* path, PBFS_Kernel_Entry* out, uint64_t* out_lba) {
+	if (!mnt || !path || !out || !out_lba) return PBFS_ERR_Argument_Invalid;
+
     char normalized[PBFS_MAX_PATH_LEN];
     path_normalize((char*)path, normalized, PBFS_MAX_PATH_LEN);
 
@@ -765,7 +863,7 @@ static int find_kernel_entry(const char* path, PBFS_Kernel_Entry* out, uint64_t*
         uint64_t iter_lba = current_kt_lba;
         while (iter_lba > 0) {
             PBFS_Kernel_Table kt;
-            int out_res = pbfs_read(mnt, iter_lba, sizeof(PBFS_Kernel_Table), &kt);
+            int out_res = pbfs_read(mnt, uint128_from_u64(iter_lba), sizeof(PBFS_Kernel_Table), &kt);
             if (out_res != PBFS_RES_SUCCESS) return out_res;
 
             for (uint32_t i = 0; i < kt.entry_count; i++) {
@@ -777,7 +875,7 @@ static int find_kernel_entry(const char* path, PBFS_Kernel_Entry* out, uint64_t*
                 }
             }
             if (found) break;
-            iter_lba = uint128_to_u64(kt.extender_lba);
+            iter_lba = uint128_to_u64(kt.extender.next_lba);
         }
 
         if (!found) return PBFS_ERR_File_Not_Found;
@@ -785,37 +883,173 @@ static int find_kernel_entry(const char* path, PBFS_Kernel_Entry* out, uint64_t*
     return PBFS_RES_SUCCESS;
 }
 
-static int retrieve_dir_dmm(int find_res, PBFS_DMM_Entry* dmme, PBFS_DMM* out, uint64_t* out_lba, struct pbfs_mount* mnt) {
+static int retrieve_dir_dmm(struct pbfs_mount* mnt, int find_res, PBFS_DMM_Entry* dmme, PBFS_DMM* out, uint64_t* out_lba) {
+	if (!mnt || !dmme || !out || !out_lba) return PBFS_ERR_Argument_Invalid;
+
     if (find_res != -1 && find_res != PBFS_RES_SUCCESS) return find_res;
+
     if (find_res == -1) {
-        int res = pbfs_read(mnt, mnt->header64.dmm_root_lba, sizeof(PBFS_DMM), out);
+        int res = pbfs_read(mnt, uint128_from_u64(mnt->header64.dmm_root_lba), sizeof(PBFS_DMM), out);
         if (res != PBFS_RES_SUCCESS) return res;
         *out_lba = mnt->header64.dmm_root_lba;
         return PBFS_RES_SUCCESS;
     } else {
         PBFS_Metadata md = {0};
-        uint64_t dmme_lba = uint128_to_u64(dmme->lba);
-        int res = pbfs_read(mnt, dmme_lba, sizeof(PBFS_Metadata), &md);
+        int res = pbfs_get_metadata(mnt, dmme, &md, NULL);
         if (res != PBFS_RES_SUCCESS) return res;
 
-        if (md.data_offset < 1) return PBFS_ERR_Invalid_File_Or_Directory;
-        *out_lba = md.data_offset + dmme_lba;
+		uint64_t dlba = uint128_to_u64(md.data_lba);
+        if (dlba < PBFS_HDR_START_LBA) return PBFS_ERR_Invalid_File_Or_Directory;
+        *out_lba = dlba;
 
-        return pbfs_read(mnt, *out_lba, sizeof(PBFS_DMM), out);
+        return pbfs_read(mnt, dmme->lba, sizeof(PBFS_DMM), out);
     }
     return PBFS_ERR_UNKNOWN;
 }
 
+static bool check_permissions(struct pbfs_mount* mnt, PBFS_Metadata* md, PBFS_Permission_Table* pt, PBFS_Permission_Flags required_perms, bool inverse) {
+	if (!mnt || !md) return false;
+
+	(void)pt;
+
+	if (mnt->root_usage) {
+		goto skip_permission_check;
+	}
+
+	if (inverse) {
+		if (md->permission_flags & required_perms) return false;
+	} else {
+		if (!(md->permission_flags & required_perms)) return false;
+	}
+
+	skip_permission_check: {}
+	return true;
+}
+
+static int true_update_file(struct pbfs_mount* mnt, PBFS_Metadata md, uint64_t e_lba, uint8_t* data, size_t data_size, uint64_t timestamp) {
+	if (!mnt) return PBFS_ERR_Argument_Invalid;
+
+	uint64_t required_blocks = ALIGN_UP(data_size, mnt->header64.block_size) / mnt->header64.block_size;
+
+	uint64_t ext_lba = uint128_to_u64(md.extender.next_lba);
+    uint64_t md_data_size = uint128_to_u64(md.data_size);
+
+	if (uint128_to_u64(md.data_lba) <= PBFS_HDR_START_LBA || md_data_size < 1) return PBFS_ERR_Invalid_File_Or_Directory;
+
+	while (ext_lba != 0) {
+		PBFS_Metadata emd = {0};
+
+        uint128_t lba = uint128_from_u64(ext_lba);
+        int out = pbfs_read(mnt, lba, sizeof(PBFS_Metadata), &emd);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+		if (uint128_to_u64(emd.data_lba) <= PBFS_HDR_START_LBA || uint128_to_u64(emd.data_size) < 1) return PBFS_ERR_Invalid_File_Or_Directory;
+        md_data_size += ALIGN_UP(uint128_to_u64(emd.data_size), mnt->header64.block_size);
+
+		ext_lba = uint128_to_u64(md.extender.next_lba);
+    }
+
+	required_blocks = md_data_size < data_size ? (ALIGN_UP(md_data_size - data_size, mnt->header64.block_size) / mnt->header64.block_size) : 0;
+	uint64_t nlba = required_blocks > 0 ? bitmap_find_blocks(mnt->header64.data_start_lba, required_blocks + 1, mnt) : 0;
+    if (required_blocks > 0 && nlba <= 1) return PBFS_ERR_No_Space_Left;
+
+	uint128_t nlba128 = uint128_from_u64(nlba);
+
+	bool free_rest = false;
+
+	uint8_t* data_ptr = data;
+	uint64_t data_left = data_size;
+
+	PBFS_Metadata emd = {0};
+	uint128_t lba = UINT128_ZERO;
+
+	while (ext_lba != 0) {
+        lba = uint128_from_u64(ext_lba);
+        int out = pbfs_read(mnt, lba, sizeof(PBFS_Metadata), &emd);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+		uint64_t emd_data_count = ALIGN_UP(uint128_to_u64(emd.data_size), mnt->header64.block_size);
+
+		if (free_rest) {
+			uint64_t emd_data_lba = uint128_to_u64(emd.data_lba);
+			for (uint64_t i = emd_data_lba; i < emd_data_lba + (emd_data_count / mnt->header64.block_size); i++) {
+				bitmap_set(&mnt->root_bitmap, i, mnt->header64.bitmap_lba, 0, mnt, 0);
+			}
+			bitmap_set(&mnt->root_bitmap, ext_lba, mnt->header64.bitmap_lba, 0, mnt, 0);
+
+			ext_lba = uint128_to_u64(md.extender.next_lba);
+			continue;
+		}
+
+		uint64_t bytes_to_write = data_left > emd_data_count ? emd_data_count : data_left;
+
+		out = pbfs_write(mnt, emd.data_lba, bytes_to_write, data_ptr);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+		data_left -= bytes_to_write;
+		data_ptr = data_ptr + bytes_to_write;
+
+		if (data_left < 1) {
+			free_rest = true;
+			emd.extender.next_lba = UINT128_ZERO;
+		}
+
+		emd.modified_timestamp = timestamp;
+		emd.data_size = uint128_from_u64(bytes_to_write);
+
+		ext_lba = uint128_to_u64(emd.extender.next_lba);
+		if (ext_lba == 0) {
+			emd.extender.next_lba = nlba128;
+		}
+
+		out = pbfs_write(mnt, lba, sizeof(PBFS_Metadata), &emd);
+        if (out != PBFS_RES_SUCCESS) return out;
+    }
+
+	if (data_left < 1) goto finish;
+
+	uint128_t nlba_p1 = uint128_from_u64(nlba + 1);
+
+	PBFS_Metadata nmd = md;
+	nmd.created_timestamp = timestamp;
+	nmd.modified_timestamp = timestamp;
+	nmd.data_lba = nlba_p1;
+	nmd.data_size = uint128_from_u64(data_left);
+	nmd.extender.next_lba = UINT128_ZERO;
+	nmd.extender.prev_lba = lba;
+
+	int out = pbfs_write(mnt, nlba128, sizeof(PBFS_Metadata), &nmd);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+	out = pbfs_write(mnt, nlba_p1, data_left, data_ptr);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+	finish: {
+		md.modified_timestamp = timestamp;
+		return pbfs_write(mnt, uint128_from_u64(e_lba), sizeof(PBFS_Metadata), &md);
+	}
+}
+
 // API
 int pbfs_init(struct pbfs_funcs* functions) {
+	if (!functions) return PBFS_ERR_Argument_Invalid;
+
 	lock_spinlock(&pbfs_funcs_lock);
     funcs = *functions;
+	funcs.initialized = true;
 	unlock_spinlock(&pbfs_funcs_lock);
 
     return PBFS_RES_SUCCESS;
 }
 
 int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t boot_part_lba, uint64_t boot_part_size, uint64_t volume_id) {
+	if (!dev) return PBFS_ERR_Argument_Invalid;
+
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return PBFS_ERR_Not_Initialized;
+
     uint64_t bitmap_lba = 1 + PBFS_HDR_START_LBA;
     uint64_t dmm_lba = 2 + PBFS_HDR_START_LBA;
     uint64_t sysinfo_lba = 3 + PBFS_HDR_START_LBA;
@@ -841,7 +1075,10 @@ int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t
         )
     ) return PBFS_ERR_Argument_Invalid;
 
+	lock_spinlock(&pbfs_funcs_lock);
     uint8_t* disk = (uint8_t*)funcs.malloc(dev->block_size);
+	unlock_spinlock(&pbfs_funcs_lock);
+
     if (!disk) return PBFS_ERR_Allocation_Failed;
     memset(disk, 0, dev->block_size);
     dev->write_block(dev, 0, disk);
@@ -882,7 +1119,9 @@ int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t
     dev->write_block(dev, PBFS_HDR_START_LBA, disk);
     dev->flush(dev);
 
+	lock_spinlock(&pbfs_funcs_lock);
     funcs.free(disk);
+	unlock_spinlock(&pbfs_funcs_lock);
 
     struct pbfs_mount mnt = {0}; // Make a fake mount
     int out = pbfs_mount(dev, &mnt);
@@ -945,23 +1184,23 @@ int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt) {
     return PBFS_RES_SUCCESS;
 }
 
-int pbfs_read_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) {
+int pbfs_read_block(struct pbfs_mount* mnt, uint128_t fs_block, void* buffer) {
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
 
-    uint64_t lba = mnt->partition_start_lba + fs_block;
+    uint64_t lba = mnt->partition_start_lba + uint128_to_u64(fs_block);
     mnt->dev->read_block(mnt->dev, lba, buffer);
     return PBFS_RES_SUCCESS;
 }
 
-int pbfs_write_block(struct pbfs_mount* mnt, uint64_t fs_block, void* buffer) {
+int pbfs_write_block(struct pbfs_mount* mnt, uint128_t fs_block, void* buffer) {
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
 
-    uint64_t lba = mnt->partition_start_lba + fs_block;
+    uint64_t lba = mnt->partition_start_lba + uint128_to_u64(fs_block);
     mnt->dev->write_block(mnt->dev, lba, buffer);
     return PBFS_RES_SUCCESS;
 }
 
-int pbfs_read(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) {
+int pbfs_read(struct pbfs_mount* mnt, uint128_t fs_block, size_t size, void* buffer) {
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
 	if (size == 0) return PBFS_RES_SUCCESS;
 
@@ -969,23 +1208,25 @@ int pbfs_read(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buff
     uint64_t required_blocks = ALIGN_UP(size, block_size) / block_size;
     size_t extra_size = (required_blocks * block_size) - size;
 
+	uint64_t tfs_block = uint128_to_u64(fs_block);
+
 	if (extra_size == 0) {
-        if (mnt->dev->read(mnt->dev, mnt->partition_start_lba + fs_block, required_blocks, buffer) == 0) return PBFS_ERR_UNKNOWN;
+        if (mnt->dev->read(mnt->dev, mnt->partition_start_lba + tfs_block, required_blocks, buffer) == 0) return PBFS_ERR_UNKNOWN;
         return PBFS_RES_SUCCESS;
     }
 
 	uint8_t tail[block_size];
 
     if (required_blocks > 1) {
-        if (mnt->dev->read(mnt->dev, mnt->partition_start_lba + fs_block, required_blocks - 1, buffer) == 0) return PBFS_ERR_UNKNOWN;
+        if (mnt->dev->read(mnt->dev, mnt->partition_start_lba + tfs_block, required_blocks - 1, buffer) == 0) return PBFS_ERR_UNKNOWN;
     }
-    if (mnt->dev->read(mnt->dev, mnt->partition_start_lba + fs_block + required_blocks - 1, 1, tail) == 0) return PBFS_ERR_UNKNOWN;
+    if (mnt->dev->read(mnt->dev, mnt->partition_start_lba + tfs_block + required_blocks - 1, 1, tail) == 0) return PBFS_ERR_UNKNOWN;
     memcpy((uint8_t*)buffer + ((required_blocks - 1) * block_size), tail, block_size - extra_size);
 
     return PBFS_RES_SUCCESS;
 }
 
-int pbfs_write(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buffer) {
+int pbfs_write(struct pbfs_mount* mnt, uint128_t fs_block, size_t size, void* buffer) {
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (size == 0) return PBFS_RES_SUCCESS;
 
@@ -993,8 +1234,10 @@ int pbfs_write(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buf
     uint64_t required_blocks = ALIGN_UP(size, block_size) / block_size;
     uint64_t extra_size = (required_blocks * block_size) - size;
 
+	uint64_t tfs_block = uint128_to_u64(fs_block);
+
     if (extra_size == 0) {
-        if (mnt->dev->write(mnt->dev, mnt->partition_start_lba + fs_block, required_blocks, buffer) == 0) return PBFS_ERR_UNKNOWN;
+        if (mnt->dev->write(mnt->dev, mnt->partition_start_lba + tfs_block, required_blocks, buffer) == 0) return PBFS_ERR_UNKNOWN;
         return PBFS_RES_SUCCESS;
     }
 
@@ -1007,9 +1250,9 @@ int pbfs_write(struct pbfs_mount* mnt, uint64_t fs_block, size_t size, void* buf
     memcpy(tail, (uint8_t*)buffer + tail_offset, tail_size);
 
     if (required_blocks > 1) {
-        if (mnt->dev->write(mnt->dev, mnt->partition_start_lba + fs_block, required_blocks - 1, buffer) == 0) return PBFS_ERR_UNKNOWN;
+        if (mnt->dev->write(mnt->dev, mnt->partition_start_lba + tfs_block, required_blocks - 1, buffer) == 0) return PBFS_ERR_UNKNOWN;
     }
-    if (mnt->dev->write(mnt->dev, mnt->partition_start_lba + fs_block + required_blocks - 1, 1, tail) == 0) return PBFS_ERR_UNKNOWN;
+    if (mnt->dev->write(mnt->dev, mnt->partition_start_lba + tfs_block + required_blocks - 1, 1, tail) == 0) return PBFS_ERR_UNKNOWN;
 
     return PBFS_RES_SUCCESS;
 }
@@ -1021,21 +1264,42 @@ int pbfs_flush(struct pbfs_mount* mnt) {
     return PBFS_RES_SUCCESS;
 }
 
-int pbfs_add(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBFS_Metadata_Flags type, PBFS_Permission_Flags permissions, uint8_t* data, size_t data_size) {
+int pbfs_get_metadata(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, PBFS_Metadata* md_out, PBFS_Permission_Table* perm_out) {
+	if (!mnt || !entry || !md_out) return PBFS_ERR_Argument_Invalid;
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    
+	int out = pbfs_read(mnt, entry->lba, sizeof(PBFS_Metadata), md_out);
+	if (out != PBFS_RES_SUCCESS) return out;
+
+	if (!perm_out) return PBFS_RES_SUCCESS;
+
+	if (uint128_to_u64(md_out->permission_lba) <= PBFS_HDR_START_LBA) return PBFS_RES_SUCCESS; // Invalid PT = Ignore PT
+	
+	return pbfs_read(mnt, md_out->permission_lba, sizeof(PBFS_Permission_Table), perm_out);
+}
+
+int pbfs_add(struct pbfs_mount* mnt, char* path, PBFS_Metadata* md, PBFS_Permission_Table* pt, uint8_t* data, size_t data_size) {
+	if (!mnt || !md || !data || data_size < 1) return PBFS_ERR_Argument_Invalid;
+
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(path) < 1) return PBFS_ERR_No_Path;
-    if (type == METADATA_FLAG_INVALID) return PBFS_ERR_Wrong_Type;
-    if (permissions == PERM_INVALID) return PBFS_ERR_Wrong_Permissions;
-    if (data_size < 1) return PBFS_ERR_Argument_Invalid;
-    if (data == NULL) return PBFS_ERR_Argument_Invalid;
+    if (md->type == PBFS_METADATA_TYPE_INVALID) return PBFS_ERR_Wrong_Type;
+    if (md->permission_flags == PBFS_PERM_INVALID) return PBFS_ERR_Wrong_Permissions;
 
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return PBFS_ERR_Not_Initialized;
+
+	PBFS_Metadata tmp_md = {0};
     PBFS_DMM_Entry tmp = {0};
     uint64_t tmp_lba = 0;
-    if (find_dmm_entry(path, &tmp, &tmp_lba, mnt) == PBFS_RES_SUCCESS) return PBFS_ERR_File_Already_Exists;
+    if (find_dmm_entry(mnt, path, &tmp, &tmp_md, NULL, &tmp_lba) == PBFS_RES_SUCCESS) return PBFS_ERR_File_Already_Exists;
 
     uint64_t required_blocks = ALIGN_UP(data_size, mnt->header64.block_size) / mnt->header64.block_size;
+	uint8_t extra = pt ? 2 : 1;
     
-    uint64_t lba = bitmap_find_blocks(mnt->header64.data_start_lba, required_blocks + 1, mnt);
+    uint64_t lba = bitmap_find_blocks(mnt->header64.data_start_lba, required_blocks + extra, mnt);
     if (lba <= 1) return PBFS_ERR_No_Space_Left;
 
     char dname[PBFS_MAX_PATH_LEN];
@@ -1043,385 +1307,429 @@ int pbfs_add(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBF
     path_basename(path, name, PBFS_MAX_NAME_LEN);
     path_dirname(path, dname, PBFS_MAX_PATH_LEN);
 
+	PBFS_Metadata parent_md = {0};
+	PBFS_Permission_Table parent_pt = {0};
     PBFS_DMM_Entry parent = {0};
     uint64_t parent_lba = {0};
-    int out = find_dmm_entry(dname, &parent, &parent_lba, mnt);
+
+    int out = find_dmm_entry(mnt, dname, &parent, &parent_md, &parent_pt, &parent_lba);
     if (out != -1 && out != PBFS_RES_SUCCESS) return out;
 
     if (out != -1) {
         // check perms
-        if (!(parent.perms & PERM_WRITE)) return PBFS_ERR_Wrong_Permissions;
+        if (!check_permissions(mnt, &parent_md, &parent_pt, PBFS_PERM_WRITE, false)) return PBFS_ERR_Wrong_Permissions;
     }
 
     PBFS_DMM parent_dmm = {0};
     uint64_t parent_dmm_lba = {0};
-    out = retrieve_dir_dmm(out, &parent, &parent_dmm, &parent_dmm_lba, mnt);
+    out = retrieve_dir_dmm(mnt, out, &parent, &parent_dmm, &parent_dmm_lba);
     if (out != PBFS_RES_SUCCESS) return out;
 
-    PBFS_Metadata md = {0};
-    memcpy(&md.name, name, strlen(name));
-    md.uid = uid;
-    md.gid = gid;
-    md.permission_offset = 0;
-    md.created_timestamp = 0;
-    md.modified_timestamp = 0;
-    md.data_size = uint128_from_u64(data_size);
-    md.data_offset = 1;
-    md.flags = type;
-    md.ex_flags = permissions;
-    md.extender_lba = UINT128_ZERO;
+	lock_spinlock(&pbfs_funcs_lock);
+	uint64_t timestamp = funcs.get_timestamp();
+	unlock_spinlock(&pbfs_funcs_lock);
 
-    out = pbfs_write(mnt, lba, sizeof(PBFS_Metadata), &md);
+	uint128_t lba128 = uint128_from_u64(lba);
+	uint128_t lba_p1 = uint128_from_u64(lba + 1);
+	uint128_t lba_p2 = uint128_from_u64(lba + 2);
+
+    PBFS_Metadata tmd = *md;
+    memcpy(&tmd.name, name, strlen(name));
+    tmd.permission_lba = pt ? lba_p1 : UINT128_ZERO;
+    tmd.created_timestamp = timestamp;
+    tmd.modified_timestamp = timestamp;
+    tmd.data_size = uint128_from_u64(data_size);
+    tmd.data_lba = pt ? lba_p2 : lba_p1;
+    tmd.extender.next_lba = UINT128_ZERO;
+	tmd.extender.root_lba = lba128;
+	tmd.extender.prev_lba = UINT128_ZERO;
+
+    out = pbfs_write(mnt, lba128, sizeof(PBFS_Metadata), &tmd);
     if (out != PBFS_RES_SUCCESS) return out;
 
-    out = pbfs_write(mnt, lba + 1, data_size, data);
-    if (out != PBFS_RES_SUCCESS) return out;
+	out = pbfs_write(mnt, lba_p1, pt ? sizeof(PBFS_Permission_Table) : data_size, pt ? (void*)pt : (void*)data);
+	if (out != PBFS_RES_SUCCESS) return out;
 
-    for (uint64_t i = 0; i < required_blocks + 1; i++) {
+	if (pt) {
+		out = pbfs_write(mnt, lba_p2, data_size, data);
+		if (out != PBFS_RES_SUCCESS) return out;
+	}
+
+    for (uint64_t i = 0; i < required_blocks + extra; i++) {
         bitmap_set(&mnt->root_bitmap, lba + i, mnt->header64.bitmap_lba, 0, mnt, 1);
     }
 
-    return add_dmm_entry(mnt, &parent_dmm, parent_dmm_lba, lba, name, type, permissions, md.created_timestamp, md.modified_timestamp);
+    return add_dmm_entry(mnt, &parent_dmm, parent_dmm_lba, lba, name);
 }
 
-int pbfs_add_dir(struct pbfs_mount* mnt, char* path, uint32_t uid, uint32_t gid, PBFS_Permission_Flags permissions) {
+int pbfs_add_dir(struct pbfs_mount* mnt, char* path, PBFS_Metadata* md, PBFS_Permission_Table* pt) {
+	if (!mnt || !path || !md) return PBFS_ERR_Argument_Invalid;
+	
+	if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (strlen(path) < 1) return PBFS_ERR_No_Path;
+
+	md->type = PBFS_METADATA_TYPE_DIR;
+
     PBFS_DMM dmm;
     memset(&dmm, 0, sizeof(PBFS_DMM));
-    return pbfs_add(mnt, path, uid, gid, METADATA_FLAG_DIR, permissions, (uint8_t*)&dmm, sizeof(PBFS_DMM));
+    return pbfs_add(mnt, path, md, pt, (uint8_t*)&dmm, sizeof(PBFS_DMM));
 }
 
 int pbfs_remove(struct pbfs_mount* mnt, char* path) {
+	if (!mnt || !path) return PBFS_ERR_Argument_Invalid;
+
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(path) < 1) return PBFS_ERR_No_Path;
 
+	PBFS_Metadata md = {0};
+	PBFS_Permission_Table pt = {0};
     PBFS_DMM_Entry e = {0};
     uint64_t e_lba = 0;
-    int out = find_dmm_entry(path, &e, &e_lba, mnt);
+
+    int out = find_dmm_entry(mnt, path, &e, &md, &pt, &e_lba);
     if (out != -1 && out != PBFS_RES_SUCCESS) return out;
     if (out == -1) return PBFS_ERR_Cannot_Remove_Root;
-    if (e.perms & PERM_LOCKED) return PBFS_ERR_Wrong_Permissions;
 
-    PBFS_Metadata md = {0};
-    e_lba = uint128_to_u64(e.lba);
-    out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
-    if (out != PBFS_RES_SUCCESS) return out;
-    uint64_t ext_lba = uint128_to_u64(md.extender_lba);
+    if (check_permissions(mnt, &md, &pt, PBFS_PERM_LOCKED | PBFS_PERM_PROTECTED, true)) return PBFS_ERR_Wrong_Permissions;
+
+    uint64_t ext_lba = uint128_to_u64(md.extender.next_lba);
+	uint64_t data_lba = uint128_to_u64(md.data_lba);
     uint64_t md_data_size = uint128_to_u64(md.data_size);
 
-    if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
-    for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
-        bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
+    if (uint128_to_u64(md.data_lba) <= PBFS_HDR_START_LBA && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+    for (uint64_t i = data_lba; i < data_lba + (md_data_size / mnt->header64.block_size); i++) {
+        bitmap_set(&mnt->root_bitmap, i, mnt->header64.bitmap_lba, 0, mnt, 0);
     }
+
+	if (uint128_to_u64(md.permission_lba) > PBFS_HDR_START_LBA) {
+		bitmap_set(&mnt->root_bitmap, uint128_to_u64(md.permission_lba), mnt->header64.bitmap_lba, 0, mnt, 0);
+	}
+
+	bitmap_set(&mnt->root_bitmap, e_lba, mnt->header64.bitmap_lba, 0, mnt, 0);
     
     while (ext_lba != 0) {
         e_lba = ext_lba;
-        out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
+        out = pbfs_read(mnt, uint128_from_u64(e_lba), sizeof(PBFS_Metadata), &md);
         if (out != PBFS_RES_SUCCESS) return out;
-        ext_lba = uint128_to_u64(md.extender_lba);
 
-        if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
-        for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
-            bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
-        }
+        ext_lba = uint128_to_u64(md.extender.next_lba);
+		data_lba = uint128_to_u64(md.data_lba);
+		md_data_size = uint128_to_u64(md.data_size);
+
+        if (uint128_to_u64(md.data_lba) <= PBFS_HDR_START_LBA && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+		for (uint64_t i = data_lba; i < data_lba + (md_data_size / mnt->header64.block_size); i++) {
+			bitmap_set(&mnt->root_bitmap, i, mnt->header64.bitmap_lba, 0, mnt, 0);
+		}
+
+		if (uint128_to_u64(md.permission_lba) > PBFS_HDR_START_LBA) {
+			bitmap_set(&mnt->root_bitmap, uint128_to_u64(md.permission_lba), mnt->header64.bitmap_lba, 0, mnt, 0);
+		}
+
+		bitmap_set(&mnt->root_bitmap, e_lba, mnt->header64.bitmap_lba, 0, mnt, 0);
     }
 
     return remove_dmm_entry(mnt, path, e_lba);
 }
 
 int pbfs_update_file(struct pbfs_mount* mnt, char* path, uint8_t* data, size_t data_size) {
+	if (!mnt || !path || !data || data_size < 1) return PBFS_ERR_Argument_Invalid;
+
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(path) < 1) return PBFS_ERR_No_Path;
-    if (data_size < 1) return PBFS_ERR_Argument_Invalid;
-    if (data == NULL) return PBFS_ERR_Argument_Invalid;
 
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return PBFS_ERR_Not_Initialized;
+
+	lock_spinlock(&pbfs_funcs_lock);
+	uint64_t timestamp = funcs.get_timestamp();
+	unlock_spinlock(&pbfs_funcs_lock);
+
+	PBFS_Metadata md = {0};
+	PBFS_Permission_Table pt = {0};
     PBFS_DMM_Entry e = {0};
     uint64_t e_lba = 0;
-    int out = find_dmm_entry(path, &e, &e_lba, mnt);
+
+    int out = find_dmm_entry(mnt, path, &e, &md, &pt, &e_lba);
     if (out != -1 && out != PBFS_RES_SUCCESS) return out;
     if (out != -1) return PBFS_ERR_Invalid_Path;
-    if (!(e.perms != PERM_WRITE)) return PBFS_ERR_Wrong_Permissions;
+    if (!check_permissions(mnt, &md, &pt, PBFS_PERM_WRITE, false)) return PBFS_ERR_Wrong_Permissions;
 
-    PBFS_Metadata og_md = {0};
-    PBFS_Metadata md = {0};
-    e_lba = uint128_to_u64(e.lba);
-    out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &og_md);
-    memcpy(&md, &og_md, sizeof(PBFS_Metadata));
-    if (out != PBFS_RES_SUCCESS) return out;
-    uint64_t ext_lba = uint128_to_u64(md.extender_lba);
-
-    uint64_t md_data_size = uint128_to_u64(md.data_size);
-    if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
-    for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
-        bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
-    }
-    
-    while (ext_lba != 0) {
-        e_lba = ext_lba;
-        out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
-        if (out != PBFS_RES_SUCCESS) return out;
-        ext_lba = uint128_to_u64(md.extender_lba);
-        md_data_size = uint128_to_u64(md.data_size);
-
-        if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
-        for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
-            bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
-        }
-    }
-
-    remove_dmm_entry(mnt, path, e_lba);
-    return pbfs_add(mnt, path, og_md.uid, og_md.gid, og_md.flags, og_md.ex_flags, data, data_size);
+    return true_update_file(mnt, md, e_lba, data, data_size, timestamp);
 }
 
-int pbfs_update_file_dmm(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* entry, uint8_t* data, size_t data_size) {
+int pbfs_update_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, uint8_t* data, size_t data_size) {
+	if (!mnt || !entry || !data || data_size < 1) return PBFS_ERR_Argument_Invalid;
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
-	if (strlen(path) < 1) return PBFS_ERR_Invalid_Path;
-    if (data_size < 1) return PBFS_ERR_Argument_Invalid;
-    if (data == NULL) return PBFS_ERR_Argument_Invalid;
 
-	if (entry->type != METADATA_FLAG_FILE) return PBFS_ERR_Wrong_Type;
-    if (!(entry->perms != PERM_WRITE)) return PBFS_ERR_Wrong_Permissions;
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return PBFS_ERR_Not_Initialized;
 
-    PBFS_Metadata og_md = {0};
-    PBFS_Metadata md = {0};
+	lock_spinlock(&pbfs_funcs_lock);
+	uint64_t timestamp = funcs.get_timestamp();
+	unlock_spinlock(&pbfs_funcs_lock);
+
+	PBFS_Metadata md = {0};
+	PBFS_Permission_Table pt = {0};
+
+	int out = pbfs_get_metadata(mnt, entry, &md, &pt);
+	if (!out != PBFS_RES_SUCCESS) return out;
+
     uint64_t e_lba = uint128_to_u64(entry->lba);
-    int out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &og_md);
-    memcpy(&md, &og_md, sizeof(PBFS_Metadata));
-    if (out != PBFS_RES_SUCCESS) return out;
-    uint64_t ext_lba = uint128_to_u64(md.extender_lba);
+    if (!check_permissions(mnt, &md, &pt, PBFS_PERM_WRITE, false)) return PBFS_ERR_Wrong_Permissions;
 
-    uint64_t md_data_size = uint128_to_u64(md.data_size);
-    if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
-    for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
-        bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
-    }
-    
-    while (ext_lba != 0) {
-        e_lba = ext_lba;
-        out = pbfs_read(mnt, e_lba, sizeof(PBFS_Metadata), &md);
-        if (out != PBFS_RES_SUCCESS) return out;
-        ext_lba = uint128_to_u64(md.extender_lba);
-        md_data_size = uint128_to_u64(md.data_size);
-
-        if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
-        for (uint64_t i = 0; i < (md_data_size / mnt->header64.block_size) + 1; i++) {
-            bitmap_set(&mnt->root_bitmap, i + e_lba, mnt->header64.bitmap_lba, 0, mnt, 1);
-        }
-    }
-
-    remove_dmm_entry(mnt, path, e_lba);
-    return pbfs_add(mnt, path, og_md.uid, og_md.gid, og_md.flags, og_md.ex_flags, data, data_size);
+    return true_update_file(mnt, md, e_lba, data, data_size, timestamp);
 }
 
 int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_Flags new_permissions) {
+	if (!mnt || !path) return PBFS_ERR_Argument_Invalid;
+
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(path) < 1) return PBFS_ERR_No_Path;
 
-    if (new_permissions == PERM_INVALID) return PBFS_ERR_Wrong_Permissions;
+    if (new_permissions == PBFS_PERM_INVALID) return PBFS_ERR_Wrong_Permissions;
 
     char dname[PBFS_MAX_PATH_LEN];
     char name[PBFS_MAX_NAME_LEN];
     path_basename(path, name, PBFS_MAX_NAME_LEN);
     path_dirname(path, dname, PBFS_MAX_PATH_LEN);
 
+	PBFS_Metadata parent_md = {0};
     PBFS_DMM_Entry parent = {0};
     uint64_t parent_lba = {0};
-    int out = find_dmm_entry(dname, &parent, &parent_lba, mnt);
+    int out = find_dmm_entry(mnt, dname, &parent, &parent_md, NULL, &parent_lba);
     if (out != -1 && out != PBFS_RES_SUCCESS) return out;
 
     PBFS_DMM parent_dmm = {0};
     uint64_t parent_dmm_lba = {0};
-    out = retrieve_dir_dmm(out, &parent, &parent_dmm, &parent_dmm_lba, mnt);
+    out = retrieve_dir_dmm(mnt, out, &parent, &parent_dmm, &parent_dmm_lba);
     if (out != PBFS_RES_SUCCESS) return out;
 
+	PBFS_Metadata md = {0};
+    PBFS_Permission_Table pt = {0};
     PBFS_DMM_Entry e = {0};
     uint64_t e_lba = 0;
-    out = find_dmm_entry(path, &e, &e_lba, mnt);
+    out = find_dmm_entry(mnt, path, &e, &md, &pt, &e_lba);
     if (out != -1 && out != PBFS_RES_SUCCESS) return out;
     if (out != -1) return PBFS_ERR_Invalid_Path;
     
-    PBFS_Metadata md = {0};
-    uint64_t md_lba = uint128_to_u64(e.lba);
-    out = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
+	if (!check_permissions(mnt, &md, &pt, PBFS_PERM_PROTECTED, true)) return PBFS_ERR_Wrong_Permissions;
+
+    md.permission_flags = new_permissions;
+    out = pbfs_write(mnt, uint128_from_u64(e_lba), sizeof(PBFS_Metadata), &md);
     if (out != PBFS_RES_SUCCESS) return out;
 
-    md.ex_flags = new_permissions;
-    out = pbfs_write(mnt, md_lba, sizeof(PBFS_Metadata), &md);
-    if (out != PBFS_RES_SUCCESS) return out;
-
-    out = remove_dmm_entry(mnt, path, e_lba);
-    if (out != PBFS_RES_SUCCESS) return out;
-
-    return add_dmm_entry(mnt, &parent_dmm, parent_dmm_lba, e_lba, name, md.flags, new_permissions, md.created_timestamp, md.modified_timestamp);
+	return PBFS_RES_SUCCESS;
 }
 
 int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_t* data_size) {
+	if (!mnt || !path || !data_out || !data_size) return PBFS_ERR_Argument_Invalid;
+
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(path) < 1) return PBFS_ERR_No_Path;
-    if (data_size == NULL) return PBFS_ERR_Argument_Invalid;
-    if (data_out == NULL) return PBFS_ERR_Argument_Invalid;
+
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return PBFS_ERR_Not_Initialized;
 
     char dname[PBFS_MAX_PATH_LEN];
     char name[PBFS_MAX_NAME_LEN];
     path_basename(path, name, PBFS_MAX_NAME_LEN);
     path_dirname(path, dname, PBFS_MAX_PATH_LEN);
 
+	PBFS_Metadata md = {0};
+	PBFS_Permission_Table pt = {0};
     PBFS_DMM_Entry e = {0};
     uint64_t e_lba = 0;
-    int out = find_dmm_entry(path, &e, &e_lba, mnt);
+    int out = find_dmm_entry(mnt, path, &e, &md, &pt, &e_lba);
     if (out != -1 && out != PBFS_RES_SUCCESS) return out;
-    if (!(e.perms & PERM_READ)) return PBFS_ERR_Wrong_Permissions;
+
+    if (!check_permissions(mnt, &md, &pt, PBFS_PERM_READ, false)) return PBFS_ERR_Wrong_Permissions;
     
-    PBFS_Metadata md = {0};
-    uint64_t md_lba = uint128_to_u64(e.lba);
-    out = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
-    if (out != PBFS_RES_SUCCESS) return out;
-
     uint64_t md_data_size = uint128_to_u64(md.data_size);
-
-    if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+    if (uint128_to_u64(md.data_lba) <= PBFS_HDR_START_LBA && md_data_size < 1) return PBFS_ERR_Invalid_File_Or_Directory;
 
 	PBFS_Metadata md_t = md;
-	while (!uint128_is_zero(&md.extender_lba)) {
-        out = pbfs_read(mnt, uint128_to_u64(md_t.extender_lba), sizeof(PBFS_Metadata), &md_t);
+	while (!uint128_is_zero(&md.extender.next_lba)) {
+        out = pbfs_read(mnt, md_t.extender.next_lba, sizeof(PBFS_Metadata), &md_t);
         if (out != PBFS_RES_SUCCESS) return out;
+
+		if (uint128_to_u64(md_t.data_lba) <= PBFS_HDR_START_LBA && uint128_to_u64(md_t.data_size) < 1) return PBFS_ERR_Invalid_File_Or_Directory;
         md_data_size += uint128_to_u64(md_t.data_size);
-		if (md_t.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
 	}
     
+	lock_spinlock(&pbfs_funcs_lock);
     uint8_t* data = funcs.malloc(md_data_size);
-    if (data == NULL) return PBFS_ERR_Allocation_Failed;
-    *data_size = md_data_size;
-    *data_out = data;
+	unlock_spinlock(&pbfs_funcs_lock);
 
-    out = pbfs_read(mnt, md.data_offset + md_lba, uint128_to_u64(md.data_size), data);
+    if (!data) return PBFS_ERR_Allocation_Failed;
+
+    out = pbfs_read(mnt, md.data_lba, uint128_to_u64(md.data_size), data);
     if (out != PBFS_RES_SUCCESS) return out;
     
 	md_t = md;
-	uint64_t ext_lba = 0;
 	uint64_t cOff = uint128_to_u64(md.data_size);
-    while (!uint128_is_zero(&md_t.extender_lba)) {
-		ext_lba = uint128_to_u64(md_t.extender_lba);
-        out = pbfs_read(mnt, ext_lba, sizeof(PBFS_Metadata), &md_t);
+    while (!uint128_is_zero(&md_t.extender.next_lba)) {
+        out = pbfs_read(mnt, md_t.extender.next_lba, sizeof(PBFS_Metadata), &md_t);
         if (out != PBFS_RES_SUCCESS) return out;
 
-        out = pbfs_read(mnt, md_t.data_offset + ext_lba, uint128_to_u64(md_t.data_size), data + cOff);
+        out = pbfs_read(mnt, md_t.data_lba, uint128_to_u64(md_t.data_size), data + cOff);
         if (out != PBFS_RES_SUCCESS) return out;
 
 		cOff += uint128_to_u64(md_t.data_size);
     }
 
+	*data_size = md_data_size;
+    *data_out = data;
     return PBFS_RES_SUCCESS;
 }
 
-int pbfs_read_file_dmm(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* entry, uint8_t** data_out, size_t* data_size) {
-    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
-	if (strlen(path) < 1) return PBFS_ERR_Invalid_Path;
-    if (data_size == NULL) return PBFS_ERR_Argument_Invalid;
-    if (data_out == NULL) return PBFS_ERR_Argument_Invalid;
+int pbfs_read_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, uint8_t** data_out, size_t* data_size) {
+	if (!mnt || !data_out || !data_size || !entry) return PBFS_ERR_Argument_Invalid;
 
-	if (entry->type != METADATA_FLAG_FILE) return PBFS_ERR_Wrong_Type;
-    if (!(entry->perms & PERM_READ)) return PBFS_ERR_Wrong_Permissions;
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return PBFS_ERR_Not_Initialized;
     
     PBFS_Metadata md = {0};
-    uint64_t md_lba = uint128_to_u64(entry->lba);
-    int out = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
+	PBFS_Permission_Table pt = {0};
+    int out = pbfs_get_metadata(mnt, entry, &md, &pt);
     if (out != PBFS_RES_SUCCESS) return out;
-
+	
+	if (!check_permissions(mnt, &md, &pt, PBFS_PERM_READ, false)) return PBFS_ERR_Wrong_Permissions;
+    
     uint64_t md_data_size = uint128_to_u64(md.data_size);
-    if (md.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
+    if (uint128_to_u64(md.data_lba) <= PBFS_HDR_START_LBA && md_data_size < 1) return PBFS_ERR_Invalid_File_Or_Directory;
 
 	PBFS_Metadata md_t = md;
-	while (!uint128_is_zero(&md.extender_lba)) {
-        out = pbfs_read(mnt, uint128_to_u64(md_t.extender_lba), sizeof(PBFS_Metadata), &md_t);
+	while (!uint128_is_zero(&md.extender.next_lba)) {
+        out = pbfs_read(mnt, md_t.extender.next_lba, sizeof(PBFS_Metadata), &md_t);
         if (out != PBFS_RES_SUCCESS) return out;
+
+		if (uint128_to_u64(md_t.data_lba) <= PBFS_HDR_START_LBA && uint128_to_u64(md_t.data_size) < 1) return PBFS_ERR_Invalid_File_Or_Directory;
         md_data_size += uint128_to_u64(md_t.data_size);
-		if (md_t.data_offset < 1 && md_data_size > 0) return PBFS_ERR_Invalid_File_Or_Directory;
 	}
     
+	lock_spinlock(&pbfs_funcs_lock);
     uint8_t* data = funcs.malloc(md_data_size);
-    if (data == NULL) return PBFS_ERR_Allocation_Failed;
-    *data_size = md_data_size;
-    *data_out = data;
+	unlock_spinlock(&pbfs_funcs_lock);
 
-    out = pbfs_read(mnt, md.data_offset + md_lba, uint128_to_u64(md.data_size), data);
+    if (!data) return PBFS_ERR_Allocation_Failed;
+
+    out = pbfs_read(mnt, md.data_lba, uint128_to_u64(md.data_size), data);
     if (out != PBFS_RES_SUCCESS) return out;
     
 	md_t = md;
-	uint64_t ext_lba = 0;
 	uint64_t cOff = uint128_to_u64(md.data_size);
-    while (!uint128_is_zero(&md_t.extender_lba)) {
-		ext_lba = uint128_to_u64(md_t.extender_lba);
-        out = pbfs_read(mnt, ext_lba, sizeof(PBFS_Metadata), &md_t);
+    while (!uint128_is_zero(&md_t.extender.next_lba)) {
+        out = pbfs_read(mnt, md_t.extender.next_lba, sizeof(PBFS_Metadata), &md_t);
         if (out != PBFS_RES_SUCCESS) return out;
 
-        out = pbfs_read(mnt, md_t.data_offset + ext_lba, uint128_to_u64(md_t.data_size), data + cOff);
+        out = pbfs_read(mnt, md_t.data_lba, uint128_to_u64(md_t.data_size), data + cOff);
         if (out != PBFS_RES_SUCCESS) return out;
 
 		cOff += uint128_to_u64(md_t.data_size);
     }
 
+	*data_size = md_data_size;
+    *data_out = data;
     return PBFS_RES_SUCCESS;
 }
 
 int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path) {
+	if (!mnt || !path || !new_path) return PBFS_ERR_Argument_Invalid;
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(path) < 1) return PBFS_ERR_No_Path;
     if (strlen(new_path) < 1) return PBFS_ERR_No_Path;
 
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return PBFS_ERR_Not_Initialized;
+
+	PBFS_Metadata md = {0};
+	PBFS_Permission_Table pt = {0};
     PBFS_DMM_Entry e = {0};
     uint64_t e_lba = 0;
-    int out = find_dmm_entry(path, &e, &e_lba, mnt);
+    int out = find_dmm_entry(mnt, path, &e, &md, &pt, &e_lba);
     if (out != -1 && out != PBFS_RES_SUCCESS) return out;
     if (out != -1) return PBFS_ERR_Invalid_Path;
 
-    PBFS_Metadata md = {0};
-    uint64_t md_lba = uint128_to_u64(e.lba);
-    out = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
-    if (out != PBFS_RES_SUCCESS) return out;
+	if (!check_permissions(mnt, &md, &pt, PBFS_PERM_READ, false)) return PBFS_ERR_Wrong_Permissions;
 
     uint8_t* data = NULL;
     size_t data_size = 0;
-    out = pbfs_read_file(mnt, path, &data, &data_size);
+    out = pbfs_read_file_dmm(mnt, &e, &data, &data_size);
     if (out != PBFS_RES_SUCCESS) {
-        if (data_size > 0 || data != NULL) funcs.free(data);
+        if (data_size > 0 || data != NULL) {
+			lock_spinlock(&pbfs_funcs_lock);
+			funcs.free(data);
+			unlock_spinlock(&pbfs_funcs_lock);
+		}
         return out;
     }
 
-    out = pbfs_add(mnt, new_path, md.uid, md.gid, md.flags, md.ex_flags, data, data_size);
+    out = pbfs_add(mnt, new_path, &md, &pt, data, data_size);
+
+	lock_spinlock(&pbfs_funcs_lock);
     funcs.free(data);
+	unlock_spinlock(&pbfs_funcs_lock);
+
     return out;
 }
 
 int pbfs_move(struct pbfs_mount* mnt, char* path, char* new_path) {
+	if (!mnt || !path || !new_path) return PBFS_ERR_Argument_Invalid;
+	if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (strlen(path) < 1) return PBFS_ERR_No_Path;
+    if (strlen(new_path) < 1) return PBFS_ERR_No_Path;
+
     int out = pbfs_copy(mnt, path, new_path);
     if (out != PBFS_RES_SUCCESS) return out;
     return pbfs_remove(mnt, path);
 }
 
 int pbfs_rename(struct pbfs_mount* mnt, char* path, char* new_path) {
+	if (!mnt || !path || !new_path) return PBFS_ERR_Argument_Invalid;
+	if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (strlen(path) < 1) return PBFS_ERR_No_Path;
+    if (strlen(new_path) < 1) return PBFS_ERR_No_Path;
+
     return pbfs_move(mnt, path, new_path);
 }
 
-int pbfs_find_entry(const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, struct pbfs_mount* mnt) {
-    if (mnt->active != 1) return PBFS_ERR_Mount_Inactive;
-    return find_dmm_entry(path, out, out_lba, mnt);
+int pbfs_find_entry(struct pbfs_mount* mnt, const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba) {
+	if (!mnt || !path || !out || !out_lba) return PBFS_ERR_Argument_Invalid;
+
+    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+	if (strlen(path) < 1) return PBFS_ERR_No_Path;
+
+	PBFS_Metadata tmp = {0};
+    return find_dmm_entry(mnt, path, out, &tmp, NULL, out_lba);
 }
 
 int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Flags flags, uint8_t* data, size_t data_size) {
+	if (!mnt || !name || !data || data_size < 1) return PBFS_ERR_Argument_Invalid;
+
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(name) < 1) return PBFS_ERR_Invalid_Path;
-    if (data_size < 1) return PBFS_ERR_Argument_Invalid;
-    if (data == NULL) return PBFS_ERR_Argument_Invalid;
 
     PBFS_Kernel_Entry tmp = {0};
     uint64_t tmp_lba = 0;
-    if (find_kernel_entry(name, &tmp, &tmp_lba, mnt) == PBFS_RES_SUCCESS) return PBFS_ERR_File_Already_Exists;
+    if (find_kernel_entry(mnt, name, &tmp, &tmp_lba) == PBFS_RES_SUCCESS) return PBFS_ERR_File_Already_Exists;
 
     uint64_t required_blocks = ALIGN_UP(data_size, mnt->header64.block_size) / mnt->header64.block_size;
     uint64_t blocks = bitmap_find_blocks(mnt->header64.data_start_lba, required_blocks, mnt);
     if (blocks <= 1) return PBFS_ERR_No_Space_Left;
 
-    int out = pbfs_write(mnt, blocks, data_size, data);
+    int out = pbfs_write(mnt, uint128_from_u64(blocks), data_size, data);
     if (out != PBFS_RES_SUCCESS) return out;
 
     out = add_kernel_entry(mnt, &mnt->root_kernel_table, mnt->header64.kernel_table_lba, blocks, required_blocks, name, flags);
@@ -1434,40 +1742,48 @@ int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Flags 
 }
 
 int pbfs_find_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Entry* kernel_e) {
+	if (!mnt || !name || !kernel_e) return PBFS_ERR_Argument_Invalid;
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(name) < 1) return PBFS_ERR_Invalid_Path;
-    if (kernel_e == NULL) return PBFS_ERR_Argument_Invalid;
 
     uint64_t out_lba = 0;
-    return find_kernel_entry(name, kernel_e, &out_lba, mnt);
+    return find_kernel_entry(mnt, name, kernel_e, &out_lba);
 }
 
 int pbfs_get_kernel(struct pbfs_mount* mnt, PBFS_Kernel_Entry* kernel_e, uint8_t** data, size_t* data_size) {
+	if (!mnt || !data || !data_size || !kernel_e) return PBFS_ERR_Argument_Invalid;
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
-    if (data == NULL) return PBFS_ERR_Argument_Invalid;
-    if (data_size == NULL) return PBFS_ERR_Argument_Invalid;
-    if (kernel_e == NULL) return PBFS_ERR_Argument_Invalid;
+
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return PBFS_ERR_Not_Initialized;
 
     uint64_t count = uint128_to_u64(kernel_e->count);
-    uint64_t lba = uint128_to_u64(kernel_e->lba);
+	
+	lock_spinlock(&pbfs_funcs_lock);
     uint8_t* data_ret = (uint8_t*)funcs.malloc(count * mnt->header64.block_size);
+	unlock_spinlock(&pbfs_funcs_lock);
+
     if (!data_ret) return PBFS_ERR_Allocation_Failed;
 
     *data_size = count * mnt->header64.block_size;
     *data = data_ret;
 
-    return pbfs_read(mnt, lba, count * mnt->header64.block_size, data_ret);
+    return pbfs_read(mnt, kernel_e->lba, count * mnt->header64.block_size, data_ret);
 }
 
 int pbfs_remove_kernel(struct pbfs_mount* mnt, char* name) {
+	if (!mnt || !name) return PBFS_ERR_Argument_Invalid;
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(name) < 1) return PBFS_ERR_No_Path;
 
     PBFS_Kernel_Entry out_e = {0};
     PBFS_Kernel_Entry64 e = {0};
     uint64_t out_lba = 0;
-    int out = find_kernel_entry(name, &out_e, &out_lba, mnt);
+    int out = find_kernel_entry(mnt, name, &out_e, &out_lba);
     if (out != PBFS_RES_SUCCESS) return out;
+
     kernelentry_to_kernelentry64(&out_e, &e);
 
     out = remove_kernel_entry(mnt, name, mnt->header64.kernel_table_lba);
@@ -1480,12 +1796,11 @@ int pbfs_remove_kernel(struct pbfs_mount* mnt, char* name) {
 }
 
 int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max_out_len, size_t* out_len) {
+	if (!mnt || !out || !out_len || max_out_len < 1) return PBFS_ERR_Argument_Invalid;
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
-    if (out == NULL) return PBFS_ERR_Argument_Invalid;
-    if (max_out_len < 1) return PBFS_RES_SUCCESS;
 
     PBFS_Kernel_Table kt = {0};
-    int ret = pbfs_read(mnt, mnt->header64.kernel_table_lba, sizeof(PBFS_Kernel_Table), &kt);
+    int ret = pbfs_read(mnt, uint128_from_u64(mnt->header.kernel_table_lba), sizeof(PBFS_Kernel_Table), &kt);
     if (ret != PBFS_RES_SUCCESS) return ret;
     if (kt.entry_count > PBFS_KERNEL_TABLE_ENTRIES) return PBFS_ERR_Kernel_Table_Corrupted;
 
@@ -1497,9 +1812,9 @@ int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max
             if (written_entries >= max_out_len) {*out_len = written_entries; return PBFS_RES_SUCCESS;}
             out[written_entries++] = kt.entries[i];
         }
-        ext = uint128_to_u64(kt.extender_lba);
+        ext = uint128_to_u64(kt.extender.next_lba);
         if (ext > 0) {
-            ret = pbfs_read(mnt, ext, sizeof(PBFS_Kernel_Table), &kt);
+            ret = pbfs_read(mnt, kt.extender.next_lba, sizeof(PBFS_Kernel_Table), &kt);
             if (ret != PBFS_RES_SUCCESS) return ret;
             if (kt.entry_count > PBFS_KERNEL_TABLE_ENTRIES) return PBFS_ERR_Kernel_Table_Corrupted;
         }
@@ -1509,14 +1824,16 @@ int pbfs_list_kernels(struct pbfs_mount* mnt, PBFS_Kernel_Entry* out, size_t max
 }
 
 int pbfs_list_items(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* out, size_t max_out_len, size_t* out_len) {
-    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+    if (!mnt || !out || !out_len || max_out_len < 1) return PBFS_ERR_Argument_Invalid;
+	
+	if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(path) < 1) return PBFS_ERR_No_Path;
-    if (out == NULL) return PBFS_ERR_Argument_Invalid;
-    if (max_out_len < 1) return PBFS_RES_SUCCESS;
 
+	PBFS_Metadata md = {0};
+	PBFS_Permission_Table pt = {0};
     PBFS_DMM_Entry e = {0};
     uint64_t e_lba = 0;
-    int ret = find_dmm_entry(path, &e, &e_lba, mnt);
+    int ret = find_dmm_entry(mnt, path, &e, &md, &pt, &e_lba);
     if (ret != -1 && ret != PBFS_RES_SUCCESS) return ret;
 
     uint64_t dir_dmm_lba = 0;
@@ -1524,21 +1841,10 @@ int pbfs_list_items(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* out, siz
     if (ret == -1) {
         dir_dmm_lba = mnt->header64.dmm_root_lba;
     } else {
-        if (!(e.type & METADATA_FLAG_DIR)) {
-            return PBFS_ERR_Invalid_Path;
-        }
+        if (!check_permissions(mnt, &md, &pt, PBFS_PERM_READ, false)) return PBFS_ERR_Invalid_Path;
 
-        PBFS_Metadata md = {0};
-        uint64_t md_lba = uint128_to_u64(e.lba);
-
-        ret = pbfs_read(mnt, md_lba, sizeof(PBFS_Metadata), &md);
-        if (ret != PBFS_RES_SUCCESS) return ret;
-
-        if (md.data_offset < 1) {
-            return PBFS_ERR_Invalid_File_Or_Directory;
-        }
-
-        dir_dmm_lba = md_lba + md.data_offset;
+		dir_dmm_lba = uint128_to_u64(md.data_lba);
+        if (dir_dmm_lba <= PBFS_HDR_START_LBA) return PBFS_ERR_Invalid_File_Or_Directory;
     }
 
     size_t count = 0;
@@ -1546,14 +1852,14 @@ int pbfs_list_items(struct pbfs_mount* mnt, char* path, PBFS_DMM_Entry* out, siz
     while (dir_dmm_lba > 0 && count < max_out_len) {
         PBFS_DMM dmm = {0};
 
-        ret = pbfs_read(mnt, dir_dmm_lba, sizeof(PBFS_DMM), &dmm);
+        ret = pbfs_read(mnt, uint128_from_u64(dir_dmm_lba), sizeof(PBFS_DMM), &dmm);
         if (ret != PBFS_RES_SUCCESS) return ret;
 
         for (uint32_t i = 0; i < dmm.entry_count && count < max_out_len; i++) {
             out[count++] = dmm.entries[i];
         }
 
-        dir_dmm_lba = uint128_to_u64(dmm.extender_lba);
+        dir_dmm_lba = uint128_to_u64(dmm.extender.next_lba);
     }
     *out_len = count;
     
@@ -1564,13 +1870,18 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
     if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (data == NULL || data_size < 1) return PBFS_ERR_Argument_Invalid;
 
+	lock_spinlock(&pbfs_funcs_lock);
+	bool finitialized = funcs.initialized;
+	unlock_spinlock(&pbfs_funcs_lock);
+	if (!finitialized) return PBFS_ERR_Not_Initialized;
+
     if (mnt->header64.boot_partition_size < 1) return PBFS_ERR_No_Bootloader_Partition;
 
     if (boot_part_type == PBFS_BOOT_PART_TYPE_NONE) {
         char tmp[512];
         memcpy(tmp, data, data_size > 512 ? 512 : data_size);
         // Just write data to sector 0
-        return pbfs_write(mnt, 0, 512, tmp);
+        return pbfs_write(mnt, UINT128_ZERO, 512, tmp);
     } else if (boot_part_type == PBFS_BOOT_PART_TYPE_MBR) {
         if (mnt->header64.boot_partition_size < 2) return PBFS_ERR_Bootloader_Partition_Too_Small;
 
@@ -1585,7 +1896,7 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
 
         mbr.mbr_signature = 0xAA55;
 
-        return pbfs_write(mnt, 0, sizeof(struct btl_mbr), &mbr);
+        return pbfs_write(mnt, UINT128_ZERO, sizeof(struct btl_mbr), &mbr);
     } else if (boot_part_type == PBFS_BOOT_PART_TYPE_GPT) {
         if (mnt->header64.boot_partition_size < 34) return PBFS_ERR_Bootloader_Partition_Too_Small;
         
@@ -1602,7 +1913,7 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
 
         pmbr.mbr_signature = 0xAA55;
         
-        int out = pbfs_write(mnt, 0, 512, &pmbr);
+        int out = pbfs_write(mnt, UINT128_ZERO, 512, &pmbr);
         if (out != PBFS_RES_SUCCESS) return out;
 
         struct btl_gpt_hdr gpt_hdr = {0};
@@ -1618,7 +1929,10 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
         gpt_hdr.number_of_partition_entries = 128;
         gpt_hdr.size_of_partition_entries = sizeof(struct btl_gpt_entry);
 
+		lock_spinlock(&pbfs_funcs_lock);
         struct btl_gpt_entry* entries = funcs.malloc(sizeof(struct btl_gpt_entry) * 128);
+		unlock_spinlock(&pbfs_funcs_lock);
+
         if (!entries) return PBFS_ERR_Allocation_Failed;
         memset(entries, 0, sizeof(struct btl_gpt_entry) * 128);
 
@@ -1636,7 +1950,7 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
         uint16_t efi_part_name[36] = u"EFI System Partition";
         memcpy(entries[0].partition_name, efi_part_name, sizeof(efi_part_name));
 
-        if (crc32_initialized != 1) crc32_init();
+        if (!crc32_initialized) crc32_init();
         gpt_hdr.partition_entry_array_crc32 = crc32(entries, 128 * sizeof(struct btl_gpt_entry));
         
         generate_guid(gpt_hdr.disk_guid);
@@ -1644,10 +1958,10 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
         gpt_hdr.header_crc32 = 0;
         gpt_hdr.header_crc32 = crc32(&gpt_hdr, sizeof(struct btl_gpt_hdr));
 
-        out = pbfs_write(mnt, gpt_hdr.mylba, 512, &gpt_hdr);
-        if (out != PBFS_RES_SUCCESS) { funcs.free(entries); return out; }
-        out = pbfs_write(mnt, gpt_hdr.partition_entry_lba, 128 * sizeof(struct btl_gpt_entry), entries);
-        if (out != PBFS_RES_SUCCESS) { funcs.free(entries); return out; }
+        out = pbfs_write(mnt, uint128_from_u64(gpt_hdr.mylba), 512, &gpt_hdr);
+        if (out != PBFS_RES_SUCCESS) { lock_spinlock(&pbfs_funcs_lock); funcs.free(entries); unlock_spinlock(&pbfs_funcs_lock); return out; }
+        out = pbfs_write(mnt, uint128_from_u64(gpt_hdr.partition_entry_lba), 128 * sizeof(struct btl_gpt_entry), entries);
+        if (out != PBFS_RES_SUCCESS) { lock_spinlock(&pbfs_funcs_lock); funcs.free(entries); unlock_spinlock(&pbfs_funcs_lock); return out; }
 
         // Keep using gpt hdr for backup gpt hdr
         gpt_hdr.mylba = last_lba;
@@ -1657,13 +1971,17 @@ int pbfs_add_bootloader(struct pbfs_mount *mnt, uint8_t *data, size_t data_size,
         gpt_hdr.header_crc32 = 0;
         gpt_hdr.header_crc32 = crc32(&gpt_hdr, sizeof(struct btl_gpt_hdr));
 
-        out = pbfs_write(mnt, gpt_hdr.mylba, 512, &gpt_hdr);
-        if (out != PBFS_RES_SUCCESS) { funcs.free(entries); return out; }
-        out = pbfs_write(mnt, gpt_hdr.partition_entry_lba, 128 * sizeof(struct btl_gpt_entry), entries);
-        if (out != PBFS_RES_SUCCESS) { funcs.free(entries); return out; }
+        out = pbfs_write(mnt, uint128_from_u64(gpt_hdr.mylba), 512, &gpt_hdr);
+        if (out != PBFS_RES_SUCCESS) { lock_spinlock(&pbfs_funcs_lock); funcs.free(entries); unlock_spinlock(&pbfs_funcs_lock); return out; }
+        out = pbfs_write(mnt, uint128_from_u64(gpt_hdr.partition_entry_lba), 128 * sizeof(struct btl_gpt_entry), entries);
+        if (out != PBFS_RES_SUCCESS) { lock_spinlock(&pbfs_funcs_lock); funcs.free(entries); unlock_spinlock(&pbfs_funcs_lock); return out; }
 
-        out = pbfs_write(mnt, entries[0].starting_lba, data_size, data);
-        funcs.free(entries);
+        out = pbfs_write(mnt, uint128_from_u64(entries[0].starting_lba), data_size, data);
+        
+		lock_spinlock(&pbfs_funcs_lock);
+		funcs.free(entries);
+		unlock_spinlock(&pbfs_funcs_lock);
+
         return out;
     } else {
         return PBFS_ERR_Argument_Invalid;
@@ -1686,6 +2004,7 @@ const char* pbfs_get_err_str(enum PBFS_Result return_code) {
         case PBFS_ERR_Header_Unaligned: return "PBFS_ERR_Header_Unaligned";
 
         case PBFS_ERR_Mount_Inactive: return "PBFS_ERR_Mount_Inactive";
+		case PBFS_ERR_Not_Initialized: return "PBFS_ERR_Not_Initialized";
 
         case PBFS_ERR_No_Path: return "PBFS_ERR_No_Path";
         case PBFS_ERR_Invalid_Path: return "PBFS_ERR_Invalid_Path";

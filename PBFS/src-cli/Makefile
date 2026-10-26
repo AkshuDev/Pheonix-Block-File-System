@@ -17,7 +17,7 @@ build_dir := $(BaseDir)/build-cli
 obj_dir = $(build_dir)/objs
 headers_dir := $(BaseDir)/headers
 
-C_SRCFILES = $(wildcard *.c) $(BaseDir)/tools/utils.c $(BaseDir)/src-fs/pbfs-fs-ndrivers.c
+C_SRCFILES = $(wildcard *.c) $(BaseDir)/tools/utils.c $(BaseDir)/tools/xxhash3_128b.c $(BaseDir)/src-fs/pbfs-fs.c
 H_SRCFILES = $(wildcard $(headers_dir)/*.h)
 
 C_OBJS = $(patsubst %.c, $(build_dir)/%.o, $(C_SRCFILES))
@@ -30,7 +30,7 @@ CC := gcc
 EXTRA ?= 
 OPT_LEVEL ?= 3
 
-CFLAGS := $(EXTRA) -O$(OPT_LEVEL) -I$(headers_dir) -Wall -w
+CFLAGS := $(EXTRA) -O$(OPT_LEVEL) -I$(headers_dir) -Wall -Wextra
 CFLAGS_LIB := 
 
 OS := $(shell uname -s)
