@@ -1,1 +1,18 @@
-This is a test file!
+NOTE: This is a test file
+
+Pheonix Block File System (PBFS) is a 128-bit addressable file system designed for large-scale storage and low-level system integration.
+It provides built-in structures such as an extensible kernel table for maintaining kernel and bootloader entries, 
+a reserved Sysinfo block for accessing system information efficiently, 
+and dedicated bootloader partitions.
+
+PBFS implements an integrated permission system supporting read, write, execute, system, protected, and locked permissions.
+It also supports multiple file types, including regular files, directories, system files, symbolic links, and PBFS files.
+
+Its command-line interface enables disk creation and formatting, block-size configuration, 
+file and directory operations, permission management, and binary file reading.
+Additional capabilities include adding, removing, and managing kernels, installing bootloaders, 
+reserving boot partitions, and generating GPT or MBR disk structures.
+PBFS is designed to operate across different environments,
+including conventional Linux and Windows systems and freestanding kernel environments.
+
+These capabilities make it suitable for operating-system development and low-level storage management.

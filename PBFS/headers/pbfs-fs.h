@@ -18,10 +18,15 @@
 struct pbfs_funcs {
 	bool initialized;
 	
-    void* (*malloc)(size_t size);
-	void* (*realloc)(void* ptr, size_t nsize);
-    void (*free)(void* ptr);
-	uint64_t (*get_timestamp)(void);
+    void* (*malloc)(size_t size); // Allocate Memory
+	void* (*realloc)(void* ptr, size_t nsize); // Re-Allocate Memory
+    void (*free)(void* ptr); // Free Memory
+
+	uint64_t (*get_timestamp)(void); // Get Timestamp
+
+	uint32_t (*get_gid)(void); // Get Current Group ID
+	uint32_t (*get_uid)(void); // Get Current User ID
+	bool (*rooting_allowed)(void); // Is 'pbfs_root' function allowed to be used
 };
 
 struct block_device {
@@ -67,7 +72,13 @@ struct pbfs_mount {
     bool active;
 	
 	bool root_usage;
+
+	size_t root_uids_cap;
+	size_t root_uids_count;
 	uint32_t* root_uids;
+
+	size_t root_gids_cap;
+	size_t root_gids_count;
 	uint32_t* root_gids;
 
     struct block_device* dev;
@@ -96,7 +107,7 @@ struct pbfs_mount {
 int pbfs_init(struct pbfs_funcs* functions); // Initialize PBFS
 int pbfs_format(struct block_device* dev, uint8_t reserve_kernel_table, uint64_t boot_part_lba, uint64_t boot_part_size, uint64_t volume_id); // Format Mounted File System
 int pbfs_mount(struct block_device* dev, struct pbfs_mount* mnt); // Mount File System
-int pbfs_enable_root(struct pbfs_mount* mnt, uint32_t* uid, uint32_t* gid); // Enables Root Usage in specified mount for to specific user/groups if present, else allows root on entire mount iself; this allows the bypass of permissions entirely (Multiple Calls allowed)
+int pbfs_root(struct pbfs_mount* mnt, bool enable_root, uint32_t* uid, uint32_t* gid); // Enables/Disabled Root Usage in specified mount for to specific user/groups if present, else allows/disallows root on entire mount iself; this allows/prevents the bypass of permissions entirely (Multiple Calls allowed)
 int pbfs_read_block(struct pbfs_mount* mnt, uint128_t fs_block, void* buffer); // Read a Block from Mounted File System
 int pbfs_write_block(struct pbfs_mount* mnt, uint128_t fs_block, void* buffer); // Write a Block to Mounted File System
 int pbfs_read(struct pbfs_mount* mnt, uint128_t fs_block, size_t size, void* buffer); // Read bytes from Mounted File System
@@ -108,14 +119,14 @@ int pbfs_add_dir(struct pbfs_mount* mnt, char* path, PBFS_Metadata* md, PBFS_Per
 int pbfs_remove(struct pbfs_mount* mnt, char* path); // Remove a directory/file from Mounted File System
 int pbfs_update_file(struct pbfs_mount* mnt, char* path, uint8_t* data, size_t data_size); // Update a file from Mounted File System with new data
 int pbfs_update_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, uint8_t* data, size_t data_size); // Update a file using DMM Entry for quick access, from Mounted File System with new data
-int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_Flags new_permissions); // Change permissions of a directory/file from Mounted File System
+int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_Flags new_permissions, PBFS_Permission_Flags new_gpermissions, PBFS_Permission_Flags new_epermissions); // Change permissions of a directory/file from Mounted File System
 int pbfs_change_permissions_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, PBFS_Permission_Flags new_permissions); // Change permissions of a directory/file using DMM Entry for quick access, from Mounted File System
 int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_t* data_size); // Read a file from Mounted File System
 int pbfs_read_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, uint8_t** data_out, size_t* data_size); // Read a file using DMM Entry for quick access, from Mounted File System
 int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path); // Copy a diectory/file from Mounted File System to another place
 int pbfs_move(struct pbfs_mount* mnt, char* path, char* new_path); // Move a directory/file from Mounted File System to another place
 int pbfs_rename(struct pbfs_mount* mnt, char* path, char* new_path); // Rename a directory/file from Mounted File System
-int pbfs_find_entry(struct pbfs_mount* mnt, const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba); // Find a DMM entry based on path from Mounted File System
+int pbfs_find_entry(struct pbfs_mount* mnt, const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, bool follow_syms); // Find a DMM entry based on path from Mounted File System
 int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Flags flags, uint8_t* data, size_t data_size); // Add a new kernel entry to Mounted File System
 int pbfs_find_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Entry* kernel_e); // Find a Kernel Entry from Mounted File System
 int pbfs_get_kernel(struct pbfs_mount* mnt, PBFS_Kernel_Entry* kernel_e, uint8_t** data, size_t* data_size); // Get Kernel data from Kernel Entry, from Mounted File System

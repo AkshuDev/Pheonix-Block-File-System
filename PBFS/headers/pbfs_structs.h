@@ -88,7 +88,7 @@ typedef enum {
     PBFS_PERM_EXEC = (1 << 2),
     PBFS_PERM_SYS = (1 << 3),
     PBFS_PERM_LOCKED = (1 << 4), // No delete
-	PBFS_PERM_PROTECTED = (1 << 5) // No Delete, Read, Write, Execute, OR CHANGE OF PERMISSIONS
+	PBFS_PERM_PROTECTED = (1 << 5) // No change of permissions
 } PBFS_Permission_Flags;
 
 typedef enum {
@@ -118,7 +118,10 @@ typedef struct {
     uint128_t data_lba;
 
     uint32_t flags;
-    PBFS_Permission_Flags permission_flags;
+
+	PBFS_Permission_Flags external_permission_flags; // External Permission Flags
+	PBFS_Permission_Flags group_permission_flags; // Group Permission Flags
+    PBFS_Permission_Flags permission_flags; // Owner Permission Flags
 	
     PBFS_Extender extender;
 } PBFS_Metadata;

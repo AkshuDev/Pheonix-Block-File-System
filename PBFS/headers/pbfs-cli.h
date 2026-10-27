@@ -6,7 +6,8 @@
     #define CALLCONV
 #endif
 
-#define PBFS_CLI_HELP "Usage: pbfs-cli <image> <[commands]>\n" \
+#define PBFS_CLI_HELP \
+"Usage: pbfs-cli <image> <[commands]>\n" \
 "Commands:\n" \
 "\t-bs/--block_size <size>: Define the Block Size (Format only)\n" \
 "\t-tb/--total_blocks <count>: Define Total number of blocks (Format Only)\n" \
@@ -14,10 +15,16 @@
 "\t-v/--volume_id <id>: Sets the volume id of disk (Format Only)\n" \
 "\t--gid <id>: Sets the GID for the added file (ADD FILE/DIR Only)\n" \
 "\t--uid <id>: Sets the UID for the added file (ADD FILE/DIR Only)\n" \
+"\t--cur-gid <id>: Sets the program GID for the next command/s\n" \
+"\t--cur-uid <id>: Sets the program UID for the next command/s\n" \
 "\t--name <name>: Sets the name for the added file (ADD/UPDATE FILE Only)\n" \
-"\t--permissions <permissions>: Sets the Permissions for the added file (ADD FILE/DIR / CHP Only). Format -\n" \
+"\t--permission-mode <mode>: Allows the effect of '--permissions' flag on a specific mode, available modes:\n" \
+"\t\tu (user)/g (group)/e (external)\n" \
+"\t\tCan add multiple together, examples - ug (user+group) / uge (user+group+external)\n" \
+"\t--permissions <permissions>: Sets the Permissions of specified mode (default is user) for the added file (ADD FILE/DIR / CHP Only). Format -\n" \
 "\t\tr (read)/w (write)/e (execute)/s (system)/p (protected)/l (locked)\n" \
 "\t\tCan add multiple together, examples - rw (read+write) / res (read + execute + system)\n" \
+"\t\tWhen permission flag is not provided for any mode, permissions for that mode default to lp (locked + protected)\n" \
 "\t--type <type>: Sets the Type for the added file (ADD FILE and ADD KERNEL Only).\n\t\tTypes for files -\n" \
 "\t\t\tdir, file, res (reserve), sys (system), symlink (symbolic link)\n" \
 "\t\tTypes for Kernel -\n" \
@@ -43,4 +50,5 @@
 "\t-rfb/--read_file_binary <path>: Reads a file from within the image. (binary)\n" \
 "\t-gpt/--gpt: Adds GPT Headers, NOTE: Requires Bootloader Parition to be atleast 30 blocks (BTL ONLY)\n" \
 "\t-mbr/--mbr: Adds MBR Parition Headers, NOTE: Requires Bootloader Parition to be atleast 2 blocks (BTL ONLY)\n" \
+"\t-root/--root-usage: Enables root usage, which has the ability to bypass permissions\n" \
 "\t-h/--help: Shows this display message.\n"

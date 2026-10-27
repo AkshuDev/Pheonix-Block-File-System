@@ -12,6 +12,15 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+enum perm_mode {
+	PERM_MODE_USER = (1 << 0),
+	PERM_MODE_GROUP = (1 << 1),
+	PERM_MODE_EXTERNAL = (1 << 2)
+};
+
+static uint32_t program_gid = 0;
+static uint32_t program_uid = 0;
+
 // Util Funcs for parsing perms and types
 static PBFS_Metadata_Types parse_file_type(char* str) {
     PBFS_Metadata_Types type = PBFS_METADATA_TYPE_INVALID;
@@ -43,7 +52,7 @@ static PBFS_Permission_Flags parse_file_perms(char* str) {
             case 'l': perms |= PBFS_PERM_LOCKED; break;
             case 'p': perms |= PBFS_PERM_PROTECTED; break;
             case 's': perms |= PBFS_PERM_SYS; break;
-            default: perms = PBFS_PERM_INVALID; return perms; // No mercy
+            default: perms = PBFS_PERM_LOCKED | PBFS_PERM_PROTECTED; return perms; // Fallback, prevent EVERYTHING
         }
     }
 
@@ -58,6 +67,14 @@ static PBFS_Kernel_Flags parse_kernel_type(char* str) {
     }
 	return type;
 }
+
+static void strcpy_via_permissions(char* str, char* uperms, char* gperms, char* eperms, uint32_t perm_mode) {
+	if (!str || !uperms || !gperms || !eperms) return;
+
+	if (perm_mode & PERM_MODE_USER) strcpy(uperms, str);
+	if (perm_mode & PERM_MODE_GROUP) strcpy(gperms, str);
+	if (perm_mode & PERM_MODE_EXTERNAL) strcpy(eperms, str);
+} 
 
 static const char* kernel_flags_to_str(PBFS_Kernel_Flags flags) {
 	switch (flags) {
@@ -165,14 +182,19 @@ int pbfs_list_dir(struct pbfs_mount* mnt, const char* path) {
 		PBFS_Metadata md = {0};
 		pbfs_get_metadata(mnt, &entries[i], &md, NULL);
 
-        char perms[10];
-        file_perms_to_str(md.permission_flags, perms, sizeof(perms));
+        char uperms[12];
+		char gperms[12];
+		char eperms[12];
+
+        file_perms_to_str(md.permission_flags, uperms, sizeof(uperms));
+		file_perms_to_str(md.group_permission_flags, gperms, sizeof(gperms));
+		file_perms_to_str(md.external_permission_flags, eperms, sizeof(eperms));
 
         printf(
-            "\t%.64s [%s] (%s / at lba %llu)\n",
+            "\t%.64s [%s] (u-%s,g-%s,e-%s / at lba %llu)\n",
             md.name,
             file_type_to_str(md.type),
-            perms,
+            uperms, gperms, eperms,
             (unsigned long long)uint128_to_u64(md.data_lba)
         );
     }
@@ -314,6 +336,18 @@ static uint64_t get_timestamp(void) {
 	return t;
 }
 
+static uint32_t get_uid(void) {
+	return program_uid;
+}
+
+static uint32_t get_gid(void) {
+	return program_gid;
+}
+
+static bool is_rooting_allowed(void) {
+	return true;
+}
+
 // Main function
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -328,13 +362,19 @@ int main(int argc, char** argv) {
     uint8_t boot_partition_type = PBFS_BOOT_PART_TYPE_NONE;
 
     uint64_t volume_id = 0;
-    char disk_name[32];
+    char disk_name[32] = {0};
 
     char name[64];
     uint32_t gid = 0;
     uint32_t uid = 0;
-    char perms[6];
-    char type[16];
+    
+	char _user_perms[6] = {'l', 'p'}; // defaults
+	char _group_perms[6] = {'l', 'p'}; // defaults
+	char _external_perms[6] = {'l', 'p'}; // defaults
+
+	uint32_t perm_mode = PERM_MODE_USER;
+
+    char type[16] = {0};
 
     if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
       printf(PBFS_CLI_HELP);
@@ -376,7 +416,10 @@ int main(int argc, char** argv) {
         .free=free,
         .malloc=malloc,
 		.realloc=realloc,
-		.get_timestamp=get_timestamp
+		.get_timestamp=get_timestamp,
+		.get_uid = get_uid,
+		.get_gid = get_gid,
+		.rooting_allowed = is_rooting_allowed
     };
 
     pbfs_init(&funcs);
@@ -384,7 +427,7 @@ int main(int argc, char** argv) {
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "-bs") == 0 || strcmp(argv[i], "--block_size") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <size>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <size>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -398,7 +441,7 @@ int main(int argc, char** argv) {
             i++;
         } else if (strcmp(argv[i], "-tb") == 0 || strcmp(argv[i], "--total_blocks") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <count>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <count>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -407,7 +450,7 @@ int main(int argc, char** argv) {
             i++;
         } else if (strcmp(argv[i], "-dn") == 0 || strcmp(argv[i], "--disk_name") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <name>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <name>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -417,7 +460,7 @@ int main(int argc, char** argv) {
             i++;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--volume_id") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <volume_id>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <volume_id>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -479,7 +522,7 @@ int main(int argc, char** argv) {
             }
 
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -510,7 +553,10 @@ int main(int argc, char** argv) {
 
 			PBFS_Metadata md = {
 				.type = parse_file_type(type),
-				.permission_flags = parse_file_perms(perms),
+				.permission_flags = parse_file_perms(_user_perms),
+				.group_permission_flags = parse_file_perms(_group_perms),
+				.external_permission_flags = parse_file_perms(_external_perms),
+
 				.uid = uid,
 				.gid = gid
 			};
@@ -535,7 +581,7 @@ int main(int argc, char** argv) {
 
             // Removes a file
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -564,7 +610,7 @@ int main(int argc, char** argv) {
             }
 
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -615,7 +661,7 @@ int main(int argc, char** argv) {
             
             // Add a dir
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <path>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <path>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -624,7 +670,10 @@ int main(int argc, char** argv) {
             printf("Adding Dir [%s] to Image...\n", filepath);
 
 			PBFS_Metadata md = {
-				.permission_flags = parse_file_perms(perms),
+				.permission_flags = parse_file_perms(_user_perms),
+				.group_permission_flags = parse_file_perms(_group_perms),
+				.external_permission_flags = parse_file_perms(_external_perms),
+
 				.uid = uid,
 				.gid = gid
 			};
@@ -648,7 +697,7 @@ int main(int argc, char** argv) {
             
             // List a path
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <path>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <path>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -674,7 +723,7 @@ int main(int argc, char** argv) {
             
             // Read a file
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <path>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <path>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -708,7 +757,7 @@ int main(int argc, char** argv) {
             
             // Read a file
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <path>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <path>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -734,7 +783,7 @@ int main(int argc, char** argv) {
             printf("\nDone!\n");
         } else if (strcmp(argv[i], "--gid") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <gid>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <gid>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -742,36 +791,94 @@ int main(int argc, char** argv) {
             i++;
         } else if (strcmp(argv[i], "--uid") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <uid>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <uid>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
             uid = (uint32_t)atoi(argv[i + 1]);
             i++;
+        } else if (strcmp(argv[i], "--cur-gid") == 0) {
+            if (i + 2 > argc) {
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <gid>\n", argv[i]);
+                fclose(fp);
+                return InvalidUsage;
+            }
+            program_gid = (uint32_t)atoi(argv[i + 1]);
+            i++;
+        } else if (strcmp(argv[i], "--cur-uid") == 0) {
+            if (i + 2 > argc) {
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <uid>\n", argv[i]);
+                fclose(fp);
+                return InvalidUsage;
+            }
+            program_uid = (uint32_t)atoi(argv[i + 1]);
+            i++;
         } else if (strcmp(argv[i], "--name") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <name>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <name>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
             strcpy(name, argv[i + 1]);
             i++;
-        } else if (strcmp(argv[i], "--permissions") == 0) {
+        } else if (strcmp(argv[i], "--permission-mode") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <permissions>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <mode>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
-            strcpy(perms, argv[i + 1]);
+
+            char* mode = argv[i + 1];
+
+			perm_mode = 0;
+
+			for (char* p = mode; *p; p++) {
+				switch (*p) {
+					case 'u': perm_mode |= PERM_MODE_USER; break;
+					case 'g': perm_mode |= PERM_MODE_GROUP; break;
+					case 'e': perm_mode |= PERM_MODE_EXTERNAL; break;
+					default: {
+						fprintf(stderr, "Usage: pbfs-cli <image> %s <mode>\n\tWhere 'mode' must contain either 'u' or 'g' or 'e'. Use '--help' for more info!\n", argv[i]);
+						fclose(fp);
+						return InvalidUsage;
+					}
+				}
+			}
+
+            i++;
+        } else if (strcmp(argv[i], "--permissions") == 0) {
+            if (i + 2 > argc) {
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <permissions>\n", argv[i]);
+                fclose(fp);
+                return InvalidUsage;
+            }
+            
+			strcpy_via_permissions(argv[i + 1], _user_perms, _group_perms, _external_perms, perm_mode);
             i++;
         } else if (strcmp(argv[i], "--type") == 0) {
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <type>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <type>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
             strcpy(type, argv[i + 1]);
             i++;
+        } else if (strcmp(argv[i], "-root") == 0 || strcmp(argv[i], "--root-usage") == 0) {
+			if (mnt.active != true) {
+                int out = pbfs_mount(&block_dev, &mnt);
+                if (out != PBFS_RES_SUCCESS) {
+                    fprintf(stderr, "Failed to mount, Error: %s\n", pbfs_get_err_str(out));
+                    fclose(fp);
+                    return PBFS_ERR_UNKNOWN;
+                }
+            }
+
+            int out = pbfs_root(&mnt, true, NULL, NULL); // Full root
+			if (out != PBFS_RES_SUCCESS) {
+				fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
+				fclose(fp);
+				return out;
+			}
         } else if (strcmp(argv[i], "-btl") == 0 || strcmp(argv[i], "--bootloader") == 0) {
             if (mnt.active != true) {
                 int out = pbfs_mount(&block_dev, &mnt);
@@ -784,7 +891,7 @@ int main(int argc, char** argv) {
             
             // Add a bootloader
             if (i + 2 > argc) {
-                printf("Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <filepath>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -827,7 +934,7 @@ int main(int argc, char** argv) {
             }
         } else if (strcmp(argv[i], "-rbp") == 0 || strcmp(argv[i], "--reserve_boot_partition") == 0) {
             if (i + 3 > argc) {
-                printf("Usage: pbfs-cli <image> %s <start lba (4096 aligned)> <blocks>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <start lba (4096 aligned)> <blocks>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
@@ -874,19 +981,19 @@ int main(int argc, char** argv) {
             }
             
             if (i + 2 > argc) {
-                fprintf(stderr, "Usage: pbfs-cli <image> %s <path> --permissions <perms>\n", argv[i]);
+                fprintf(stderr, "Usage: pbfs-cli <image> --permissions <perms> %s <path>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
             char* filepath = argv[i + 1];
             i++;
-            if (strlen(filepath) < 1 || strlen(perms) < 1) {
-                fprintf(stderr, "Usage: pbfs-cli <image> %s <path> --permissions <perms>\n", argv[i]);
+            if (strlen(filepath) < 1 || (strlen(_user_perms) < 1 && strlen(_group_perms) < 1 && strlen(_external_perms) < 1)) {
+                fprintf(stderr, "Usage: pbfs-cli <image> --permissions <perms> %s <path>\n", argv[i]);
                 fclose(fp);
                 return InvalidUsage;
             }
-            printf("Changing permissions [%s] for [%s]...\n", perms, filepath);
-            int out = pbfs_change_permissions(&mnt, filepath, parse_file_perms(perms));
+            printf("Changing permissions [u-%s,g-%s,e-%s] for [%s]...\n", _user_perms, _group_perms, _external_perms, filepath);
+            int out = pbfs_change_permissions(&mnt, filepath, parse_file_perms(_user_perms), parse_file_perms(_group_perms), parse_file_perms(_external_perms));
             if (out != PBFS_RES_SUCCESS) {
                 fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
