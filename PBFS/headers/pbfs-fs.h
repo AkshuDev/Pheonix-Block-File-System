@@ -26,7 +26,7 @@ struct pbfs_funcs {
 
 	uint32_t (*get_gid)(void); // Get Current Group ID
 	uint32_t (*get_uid)(void); // Get Current User ID
-	bool (*rooting_allowed)(void); // Is 'pbfs_root' function allowed to be used
+	unsigned char (*rooting_allowed)(void); // Is 'pbfs_root' function allowed to be used
 };
 
 struct block_device {
