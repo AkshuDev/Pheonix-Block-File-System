@@ -18,15 +18,32 @@
 struct pbfs_funcs {
 	bool initialized;
 	
-    void* (*malloc)(size_t size); // Allocate Memory
-	void* (*realloc)(void* ptr, size_t nsize); // Re-Allocate Memory
-    void (*free)(void* ptr); // Free Memory
+    void* (*malloc)(size_t size); // Allocate Memory : REQUIRED
+	void* (*realloc)(void* ptr, size_t nsize); // Re-Allocate Memory : REQUIRED
+    void (*free)(void* ptr); // Free Memory : REQUIRED
 
-	uint64_t (*get_timestamp)(void); // Get Timestamp
+	uint64_t (*get_timestamp)(void); // Get Timestamp : REQUIRED
 
-	uint32_t (*get_gid)(void); // Get Current Group ID
-	uint32_t (*get_uid)(void); // Get Current User ID
-	unsigned char (*rooting_allowed)(void); // Is 'pbfs_root' function allowed to be used
+	uint32_t (*get_gid)(void); // Get Current Group ID : REQUIRED
+	uint32_t (*get_uid)(void); // Get Current User ID : REQUIRED
+	unsigned char (*rooting_allowed)(void); // Is 'pbfs_root' function allowed to be used : Required by `pbfs_root`
+
+	/*
+		Calls the function whenever any SYS file is being operated on : REQUIRED
+
+		Passes all information, including operation `usage`.
+		Function must return either data that should instead be used for the operation, or NULL to signify normal continuation of operation.
+		If `out_data_size` is set to 0 BUT some data is returned, it signifies the cancelation of the operation with the result as `*(enum PBFS_Result*)data`.
+
+		NOTES:
+			1. `PBFS_PERM_LOCKED` as `usage` signifies Remove Operation.
+			2. The return value for Remove Operation (if present, and `out_data_size` > 0) is discarded and used as cancellation of the operation with result being `*(enum PBFS_Result*)data`.
+			3. `PBFS_PERM_PROTECTED` as `usage` signifies Permission Change Operation.
+			4. The return value for Permission Change Operation (if present, and `out_data_size` > 0) will be used as a `PBFS_Permission_Flags[3]` containing 3 `PBFS_Permission_Flags` bitmasks, for user/group/external respectively.
+			5. The return value for Read Operation (if present, and `out_data_size` > 0) will be used as the read data.
+			6. The return value for Write Operation (if present, and `out_data_size` > 0) will be used as the write data.
+	*/
+	uint8_t* (*notify_use_sys_file)(size_t* out_data_size, PBFS_Metadata* md, PBFS_Permission_Table* pt, PBFS_Permission_Flags usage);
 };
 
 struct block_device {
@@ -126,7 +143,7 @@ int pbfs_read_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, uint8_t** 
 int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path); // Copy a diectory/file from Mounted File System to another place
 int pbfs_move(struct pbfs_mount* mnt, char* path, char* new_path); // Move a directory/file from Mounted File System to another place
 int pbfs_rename(struct pbfs_mount* mnt, char* path, char* new_path); // Rename a directory/file from Mounted File System
-int pbfs_find_entry(struct pbfs_mount* mnt, const char* path, PBFS_DMM_Entry* out, uint64_t* out_lba, bool follow_syms); // Find a DMM entry based on path from Mounted File System
+int pbfs_find_entry(struct pbfs_mount* mnt, const char* path, PBFS_DMM_Entry* out, PBFS_Metadata* md_out, PBFS_Permission_Table* pt_out, uint64_t* out_lba, bool follow_syms); // Find a DMM entry based on path from Mounted File System
 int pbfs_add_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Flags flags, uint8_t* data, size_t data_size); // Add a new kernel entry to Mounted File System
 int pbfs_find_kernel(struct pbfs_mount* mnt, const char* name, PBFS_Kernel_Entry* kernel_e); // Find a Kernel Entry from Mounted File System
 int pbfs_get_kernel(struct pbfs_mount* mnt, PBFS_Kernel_Entry* kernel_e, uint8_t** data, size_t* data_size); // Get Kernel data from Kernel Entry, from Mounted File System
@@ -180,3 +197,5 @@ enum PBFS_Result {
 };
 
 const char* pbfs_get_err_str(enum PBFS_Result return_code);
+int pbfs_get_perm_str(PBFS_Permission_Flags permissions, char* out, size_t max_len);
+char pbfs_get_type_char(PBFS_Metadata_Types type);

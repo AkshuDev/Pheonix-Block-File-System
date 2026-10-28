@@ -51,7 +51,6 @@ static PBFS_Permission_Flags parse_file_perms(char* str) {
             case 'e': perms |= PBFS_PERM_EXEC; break;
             case 'l': perms |= PBFS_PERM_LOCKED; break;
             case 'p': perms |= PBFS_PERM_PROTECTED; break;
-            case 's': perms |= PBFS_PERM_SYS; break;
             default: perms = PBFS_PERM_LOCKED | PBFS_PERM_PROTECTED; return perms; // Fallback, prevent EVERYTHING
         }
     }
@@ -82,40 +81,6 @@ static const char* kernel_flags_to_str(PBFS_Kernel_Flags flags) {
 		case KERNEL_FLAG_CONNECTOR: return "Connected via PBFS Connector";
 		default: return "None";
 	}
-}
-static const char* file_type_to_str(PBFS_Metadata_Types type) {
-    switch (type) {
-        case PBFS_METADATA_TYPE_INVALID: return "Invalid";
-        case PBFS_METADATA_TYPE_DIR: return "Directory";
-        case PBFS_METADATA_TYPE_FILE: return "File";
-        case PBFS_METADATA_TYPE_SYS: return "System";
-        case PBFS_METADATA_TYPE_RES: return "Reserved";
-        case PBFS_METADATA_TYPE_PBFS: return "PBFS";
-		case PBFS_METADATA_TYPE_SYMLINK: return "Symbolic Link";
-        default: return "Invalid";
-    }
-}
-static void file_perms_to_str(PBFS_Permission_Flags perms, char* out, size_t size) {
-    if (perms == PBFS_PERM_INVALID) {
-        strncpy(out, "Invalid", size);
-        return;
-    }
-    if (size < 7) return;
-    size_t off = 0;
-    if (perms & PBFS_PERM_READ)
-        out[off++] = 'r';
-    if (perms & PBFS_PERM_WRITE)
-        out[off++] = 'w';
-    if (perms & PBFS_PERM_EXEC)
-        out[off++] = 'e';
-    if (perms & PBFS_PERM_SYS)
-        out[off++] = 's';
-    if (perms & PBFS_PERM_LOCKED)
-        out[off++] = 'l';
-    if (perms & PBFS_PERM_PROTECTED)
-        out[off++] = 'p';
-    out[off++] = '\0';
-    return;
 }
 
 static int pbfs_verify_header(PBFS_Header* hdr) {
@@ -186,15 +151,15 @@ int pbfs_list_dir(struct pbfs_mount* mnt, const char* path) {
 		char gperms[12];
 		char eperms[12];
 
-        file_perms_to_str(md.permission_flags, uperms, sizeof(uperms));
-		file_perms_to_str(md.group_permission_flags, gperms, sizeof(gperms));
-		file_perms_to_str(md.external_permission_flags, eperms, sizeof(eperms));
+        pbfs_get_perm_str(md.permission_flags, uperms, sizeof(uperms));
+		pbfs_get_perm_str(md.group_permission_flags, gperms, sizeof(gperms));
+		pbfs_get_perm_str(md.external_permission_flags, eperms, sizeof(eperms));
 
         printf(
-            "\t%.64s [%s] (u-%s,g-%s,e-%s / at lba %llu)\n",
-            md.name,
-            file_type_to_str(md.type),
+            "\t[%c u-%s,g-%s,e-%s] %.64s (at LBA %llu)\n",
+            pbfs_get_type_char(md.type),
             uperms, gperms, eperms,
+			md.name,
             (unsigned long long)uint128_to_u64(md.data_lba)
         );
     }
@@ -344,8 +309,17 @@ static uint32_t get_gid(void) {
 	return program_gid;
 }
 
-static bool is_rooting_allowed(void) {
+static unsigned char is_rooting_allowed(void) {
 	return true;
+}
+
+static uint8_t* sys_file_usage(size_t* out_data_size, PBFS_Metadata* md, PBFS_Permission_Table* pt, PBFS_Permission_Flags usage) {
+	(void)md; (void)pt; (void)usage;
+
+	if (out_data_size) *out_data_size = 0;
+
+	uint8_t* to_return_data = NULL;
+	return to_return_data;
 }
 
 // Main function
@@ -419,7 +393,8 @@ int main(int argc, char** argv) {
 		.get_timestamp=get_timestamp,
 		.get_uid = get_uid,
 		.get_gid = get_gid,
-		.rooting_allowed = is_rooting_allowed
+		.rooting_allowed = is_rooting_allowed,
+		.notify_use_sys_file = sys_file_usage
     };
 
     pbfs_init(&funcs);

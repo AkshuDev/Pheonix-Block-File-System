@@ -22,7 +22,7 @@
 "\t\tu (user)/g (group)/e (external)\n" \
 "\t\tCan add multiple together, examples - ug (user+group) / uge (user+group+external)\n" \
 "\t--permissions <permissions>: Sets the Permissions of specified mode (default is user) for the added file (ADD FILE/DIR / CHP Only). Format -\n" \
-"\t\tr (read)/w (write)/e (execute)/s (system)/p (protected)/l (locked)\n" \
+"\t\tr (read)/w (write)/e (execute)/p (protected)/l (locked)\n" \
 "\t\tCan add multiple together, examples - rw (read+write) / res (read + execute + system)\n" \
 "\t\tWhen permission flag is not provided for any mode, permissions for that mode default to lp (locked + protected)\n" \
 "\t--type <type>: Sets the Type for the added file (ADD FILE and ADD KERNEL Only).\n\t\tTypes for files -\n" \

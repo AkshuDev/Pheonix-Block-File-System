@@ -83,22 +83,20 @@ typedef struct {
 
 typedef enum {
     PBFS_PERM_INVALID = 0,
-    PBFS_PERM_READ = (1 << 0),
-    PBFS_PERM_WRITE = (1 << 1),
-    PBFS_PERM_EXEC = (1 << 2),
-    PBFS_PERM_SYS = (1 << 3),
-    PBFS_PERM_LOCKED = (1 << 4), // No delete
-	PBFS_PERM_PROTECTED = (1 << 5) // No change of permissions
+    PBFS_PERM_READ = (1 << 0), // Read Allowed
+    PBFS_PERM_WRITE = (1 << 1), // Write Allowed
+    PBFS_PERM_EXEC = (1 << 2), // Execute Allowed
+    PBFS_PERM_LOCKED = (1 << 3), // Delete Disallowed
+	PBFS_PERM_PROTECTED = (1 << 4) // Permission Change Disallowed
 } PBFS_Permission_Flags;
 
 typedef enum {
     PBFS_METADATA_TYPE_INVALID = 0,
-    PBFS_METADATA_TYPE_RES = (1 << 0),
-    PBFS_METADATA_TYPE_PBFS = (1 << 1),
-    PBFS_METADATA_TYPE_SYS = (1 << 2),
-    PBFS_METADATA_TYPE_FILE = (1 << 3),
-    PBFS_METADATA_TYPE_DIR = (1 << 4),
-	PBFS_METADATA_TYPE_SYMLINK = (1 << 5),
+    PBFS_METADATA_TYPE_RES = (1 << 0), // Reserved File
+    PBFS_METADATA_TYPE_SYS = (1 << 1), // System File
+    PBFS_METADATA_TYPE_FILE = (1 << 2), // Regular File
+    PBFS_METADATA_TYPE_DIR = (1 << 3), // Directory
+	PBFS_METADATA_TYPE_SYMLINK = (1 << 4), // Symbolic Link
 } PBFS_Metadata_Types;
 
 typedef struct {
