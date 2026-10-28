@@ -17,6 +17,7 @@
 "\t--uid <id>: Sets the UID for the added file (ADD FILE/DIR Only)\n" \
 "\t--cur-gid <id>: Sets the program GID for the next command/s\n" \
 "\t--cur-uid <id>: Sets the program UID for the next command/s\n" \
+"\t--file-flags <flags>: Sets the file flags for the next add file operation\n" \
 "\t--name <name>: Sets the name for the added file (ADD/UPDATE FILE Only)\n" \
 "\t--permission-mode <mode>: Allows the effect of '--permissions' flag on a specific mode, available modes:\n" \
 "\t\tu (user)/g (group)/e (external)\n" \

@@ -341,6 +341,7 @@ int main(int argc, char** argv) {
     char name[64];
     uint32_t gid = 0;
     uint32_t uid = 0;
+	uint32_t file_flags = 0;
     
 	char _user_perms[6] = {'l', 'p'}; // defaults
 	char _group_perms[6] = {'l', 'p'}; // defaults
@@ -407,7 +408,7 @@ int main(int argc, char** argv) {
                 return InvalidUsage;
             }
             
-            block_dev.block_size = (uint32_t)atoi(argv[i + 1]);
+            block_dev.block_size = (uint32_t)strtoul(argv[i + 1], NULL, 0);
             if (block_dev.block_size < 512) {
                 fprintf(stderr, "Block Size cannot be lower than 512!\n");
                 fclose(fp);
@@ -421,7 +422,7 @@ int main(int argc, char** argv) {
                 return InvalidUsage;
             }
             
-            block_dev.block_count = (uint64_t)atoll(argv[i + 1]);
+            block_dev.block_count = (uint64_t)strtoull(argv[i + 1], NULL, 0);
             i++;
         } else if (strcmp(argv[i], "-dn") == 0 || strcmp(argv[i], "--disk_name") == 0) {
             if (i + 2 > argc) {
@@ -439,7 +440,7 @@ int main(int argc, char** argv) {
                 fclose(fp);
                 return InvalidUsage;
             }
-            volume_id = (uint64_t)atoll(argv[i + 1]);
+            volume_id = (uint64_t)strtoull(argv[i + 1], NULL, 0);
             i++;
         } else if (strcmp(argv[i], "-mbr") == 0 || strcmp(argv[i], "--mbr") == 0) {
             boot_partition_type = PBFS_BOOT_PART_TYPE_MBR;
@@ -533,7 +534,9 @@ int main(int argc, char** argv) {
 				.external_permission_flags = parse_file_perms(_external_perms),
 
 				.uid = uid,
-				.gid = gid
+				.gid = gid,
+
+				.flags = file_flags
 			};
 
             int out = pbfs_add(&mnt, name, &md, NULL, data, data_size);
@@ -650,7 +653,9 @@ int main(int argc, char** argv) {
 				.external_permission_flags = parse_file_perms(_external_perms),
 
 				.uid = uid,
-				.gid = gid
+				.gid = gid,
+
+				.flags = file_flags
 			};
 
             int out = pbfs_add_dir(&mnt, filepath, &md, NULL);
@@ -762,7 +767,7 @@ int main(int argc, char** argv) {
                 fclose(fp);
                 return InvalidUsage;
             }
-            gid = (uint32_t)atoi(argv[i + 1]);
+            gid = (uint32_t)strtoul(argv[i + 1], NULL, 0);
             i++;
         } else if (strcmp(argv[i], "--uid") == 0) {
             if (i + 2 > argc) {
@@ -770,7 +775,7 @@ int main(int argc, char** argv) {
                 fclose(fp);
                 return InvalidUsage;
             }
-            uid = (uint32_t)atoi(argv[i + 1]);
+            uid = (uint32_t)strtoul(argv[i + 1], NULL, 0);
             i++;
         } else if (strcmp(argv[i], "--cur-gid") == 0) {
             if (i + 2 > argc) {
@@ -778,7 +783,7 @@ int main(int argc, char** argv) {
                 fclose(fp);
                 return InvalidUsage;
             }
-            program_gid = (uint32_t)atoi(argv[i + 1]);
+            program_gid = (uint32_t)strtoul(argv[i + 1], NULL, 0);
             i++;
         } else if (strcmp(argv[i], "--cur-uid") == 0) {
             if (i + 2 > argc) {
@@ -786,7 +791,7 @@ int main(int argc, char** argv) {
                 fclose(fp);
                 return InvalidUsage;
             }
-            program_uid = (uint32_t)atoi(argv[i + 1]);
+            program_uid = (uint32_t)strtoul(argv[i + 1], NULL, 0);
             i++;
         } else if (strcmp(argv[i], "--name") == 0) {
             if (i + 2 > argc) {
@@ -829,6 +834,14 @@ int main(int argc, char** argv) {
             }
             
 			strcpy_via_permissions(argv[i + 1], _user_perms, _group_perms, _external_perms, perm_mode);
+            i++;
+        } else if (strcmp(argv[i], "--file-flags") == 0) {
+            if (i + 2 > argc) {
+                fprintf(stderr, "Usage: pbfs-cli <image> %s <flags>\n", argv[i]);
+                fclose(fp);
+                return InvalidUsage;
+            }
+            file_flags = (uint32_t)strtoul(argv[i + 1], NULL, 0);
             i++;
         } else if (strcmp(argv[i], "--type") == 0) {
             if (i + 2 > argc) {
@@ -913,8 +926,8 @@ int main(int argc, char** argv) {
                 fclose(fp);
                 return InvalidUsage;
             }
-            bootpartlba = (uint64_t)atoll(argv[i + 1]);
-            bootpartsize = (uint64_t)atoll(argv[i + 2]);
+            bootpartlba = (uint64_t)strtoull(argv[i + 1], NULL, 0);
+            bootpartsize = (uint64_t)strtoull(argv[i + 2], NULL, 0);
             if (bootpartsize > block_dev.block_count) {
                 fprintf(stderr, "Bootloader Parition not in disk space?\n");
                 fclose(fp);
