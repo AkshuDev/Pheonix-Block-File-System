@@ -313,8 +313,8 @@ static unsigned char is_rooting_allowed(void) {
 	return true;
 }
 
-static uint8_t* sys_file_usage(size_t* out_data_size, PBFS_Metadata* md, PBFS_Permission_Table* pt, PBFS_Permission_Flags usage) {
-	(void)md; (void)pt; (void)usage;
+static uint8_t* sys_file_usage(size_t* out_data_size, PBFS_Metadata* md, PBFS_Permission_Table* pt, size_t required_size, PBFS_Permission_Flags usage) {
+	(void)md; (void)pt; (void)usage; (void)required_size;
 
 	if (out_data_size) *out_data_size = 0;
 
@@ -710,19 +710,36 @@ int main(int argc, char** argv) {
             char* filepath = argv[i + 1];
             i++;
             printf("Reading [%s] from Image...\n", filepath);
-            uint8_t* data = NULL;
-            size_t data_size = 0;
-            int out = pbfs_read_file(&mnt, filepath, &data, &data_size);
-            if (out != PBFS_RES_SUCCESS) {
-                if (data) free(data);
+
+			size_t full_sz = 0;
+			int out = pbfs_get_file_size(&mnt, filepath, &full_sz);
+			if (out != PBFS_RES_SUCCESS) {
                 fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
+
+            uint8_t* data = (uint8_t*)malloc(full_sz + 1);
+			if (!data) {
+                perror("Failed to allocate memory\n");
+                fclose(fp);
+                return out;
+            }
+
+            size_t data_size = 0;
+            out = pbfs_read_file(&mnt, filepath, data, full_sz, &data_size);
+            if (out != PBFS_RES_SUCCESS) {
+                free(data);
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
+                fclose(fp);
+                return out;
+            }
+
             for (size_t i = 0; i < data_size; i++) {
                 if (data[i] == '\0') break;
                 printf("%c", (char)data[i]);
             }
+
             free(data);
             printf("\nDone!\n");
         } else if (strcmp(argv[i], "-rfb") == 0 || strcmp(argv[i], "--read_file_binary") == 0) {
@@ -744,16 +761,32 @@ int main(int argc, char** argv) {
             char* filepath = argv[i + 1];
             i++;
             printf("Reading [%s] from Image...\n", filepath);
-            uint8_t* data = NULL;
-            size_t data_size = 0;
-            int out = pbfs_read_file(&mnt, filepath, &data, &data_size);
-            if (out != PBFS_RES_SUCCESS) {
-                if (data) free(data);
+            
+			size_t full_sz = 0;
+			int out = pbfs_get_file_size(&mnt, filepath, &full_sz);
+			if (out != PBFS_RES_SUCCESS) {
                 fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
                 fclose(fp);
                 return out;
             }
-            for (size_t i = 0; i < data_size; i++) {
+
+            uint8_t* data = (uint8_t*)malloc(full_sz);
+			if (!data) {
+                perror("Failed to allocate memory\n");
+                fclose(fp);
+                return out;
+            }
+
+            size_t data_size = 0;
+            out = pbfs_read_file(&mnt, filepath, data, full_sz, &data_size);
+            if (out != PBFS_RES_SUCCESS) {
+                free(data);
+                fprintf(stderr, "Error: %s\n", pbfs_get_err_str(out));
+                fclose(fp);
+                return out;
+            }
+			
+			for (size_t i = 0; i < data_size; i++) {
                 printf("%02X", data[i]);
                 if (i < data_size - 1) {
                     printf(" ");

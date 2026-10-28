@@ -935,7 +935,7 @@ static int true_update_file(struct pbfs_mount* mnt, PBFS_Metadata* md, PBFS_Perm
 		// Inform
 
 		size_t sys_dsz = 0;
-		uint8_t* sys_d = funcs.notify_use_sys_file(&sys_dsz, md, pt, PBFS_PERM_WRITE);
+		uint8_t* sys_d = funcs.notify_use_sys_file(&sys_dsz, md, pt, 0, PBFS_PERM_WRITE);
 
 		if (sys_d && sys_dsz > 0) {
 			data = sys_d;
@@ -1079,7 +1079,7 @@ static int true_update_file(struct pbfs_mount* mnt, PBFS_Metadata* md, PBFS_Perm
 
 	finish: {
 		md->modified_timestamp = timestamp;
-		return pbfs_write(mnt, uint128_from_u64(e_lba), sizeof(PBFS_Metadata), &md);
+		return pbfs_write(mnt, uint128_from_u64(e_lba), sizeof(PBFS_Metadata), md);
 	}
 }
 
@@ -1540,7 +1540,7 @@ int pbfs_remove(struct pbfs_mount* mnt, char* path) {
 		// Inform
 
 		size_t sys_dsz = 0;
-		uint8_t* sys_d = funcs.notify_use_sys_file(&sys_dsz, &md, &pt, PBFS_PERM_LOCKED);
+		uint8_t* sys_d = funcs.notify_use_sys_file(&sys_dsz, &md, &pt, 0, PBFS_PERM_LOCKED);
 		if (sys_d) {
 			return (int)*(enum PBFS_Result*)sys_d;
 		}
@@ -1692,7 +1692,7 @@ int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_
 		// Inform
 
 		size_t sys_dsz = 0;
-		uint8_t* sys_d = funcs.notify_use_sys_file(&sys_dsz, &md, &pt, PBFS_PERM_PROTECTED);
+		uint8_t* sys_d = funcs.notify_use_sys_file(&sys_dsz, &md, &pt, 0, PBFS_PERM_PROTECTED);
 		if (sys_d && sys_dsz > 0) {
 			PBFS_Permission_Flags* p = (PBFS_Permission_Flags*)sys_d;
 			new_permissions = p[0];
@@ -1713,16 +1713,13 @@ int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_
 	return PBFS_RES_SUCCESS;
 }
 
-int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_t* data_size) {
-	if (!mnt || !path || !data_out || !data_size) return PBFS_ERR_Argument_Invalid;
-
-    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+int pbfs_read_file(struct pbfs_mount* mnt, char* path, void* buffer, size_t size, size_t* read_bytes) {
+	if (!mnt || !path || !buffer || !read_bytes) return PBFS_ERR_Argument_Invalid;
+	if (!mnt->active) return PBFS_ERR_Mount_Inactive;
     if (strlen(path) < 1) return PBFS_ERR_No_Path;
-
-	lock_spinlock(&pbfs_funcs_lock);
-	bool finitialized = funcs.initialized;
-	unlock_spinlock(&pbfs_funcs_lock);
-	if (!finitialized) return PBFS_ERR_Not_Initialized;
+	
+	*read_bytes = 0;
+	if (size < 1) return PBFS_RES_SUCCESS;
 
     char dname[PBFS_MAX_PATH_LEN];
     char name[PBFS_MAX_NAME_LEN];
@@ -1741,17 +1738,126 @@ int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_
 		// Inform
 
 		size_t sys_dsz = 0;
-		uint8_t* sys_d = funcs.notify_use_sys_file(&sys_dsz, &md, &pt, PBFS_PERM_READ);
+		uint8_t* sys_d = funcs.notify_use_sys_file(&sys_dsz, &md, &pt, size, PBFS_PERM_READ);
 		if (sys_d && sys_dsz > 0) {
-			*data_out = sys_d;
-			*data_size = sys_dsz;
+			*read_bytes = sys_dsz > size ? size : sys_dsz;
+			memcpy(buffer, sys_d, *read_bytes);
+			funcs.free(sys_d);
+			
 			return PBFS_RES_SUCCESS;
 		} else if (sys_d && sys_dsz < 1) {
 			return (int)*(enum PBFS_Result*)sys_d;
 		}
 	}
     
-    uint64_t md_data_size = uint128_to_u64(md.data_size);
+	uint64_t md_base_data_size = uint128_to_u64(md.data_size);
+    if (uint128_to_u64(md.data_lba) <= PBFS_HDR_START_LBA || md_base_data_size < 1) return PBFS_ERR_Invalid_File_Or_Directory;
+
+    uint8_t* data = (uint8_t*)buffer;
+	uint64_t to_read_bytes = md_base_data_size > size ? size : md_base_data_size;
+
+    out = pbfs_read(mnt, md.data_lba, to_read_bytes, data);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+	data += to_read_bytes;
+	*read_bytes += to_read_bytes;
+
+	PBFS_Metadata md_t = md;
+    while (!uint128_is_zero(&md_t.extender.next_lba) && *read_bytes < size) {
+        out = pbfs_read(mnt, md_t.extender.next_lba, sizeof(PBFS_Metadata), &md_t);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+		uint64_t extent = uint128_to_u64(md_t.data_size);
+		if (uint128_to_u64(md_t.data_lba) <= PBFS_HDR_START_LBA || extent < 1) return PBFS_ERR_Invalid_File_Or_Directory;
+
+		size_t remaining = size - *read_bytes;
+		size_t md_t_data_size = extent > remaining ? remaining : (size_t)extent;
+
+        out = pbfs_read(mnt, md_t.data_lba, md_t_data_size, data);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+		data += md_t_data_size;
+		*read_bytes += md_t_data_size;
+    }
+
+    return PBFS_RES_SUCCESS;
+}
+
+int pbfs_read_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, void* buffer, size_t size, size_t* read_bytes) {
+	if (!mnt || !buffer || !read_bytes) return PBFS_ERR_Argument_Invalid;
+	if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+	
+	*read_bytes = 0;
+	if (size < 1) return PBFS_RES_SUCCESS;
+
+	PBFS_Metadata md = {0};
+	PBFS_Permission_Table pt = {0};
+    int out = pbfs_get_metadata(mnt, entry, &md, &pt);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+    if (!check_permissions(mnt, &md, &pt, PBFS_PERM_READ, false)) return PBFS_ERR_Wrong_Permissions;
+	if (md.type == PBFS_METADATA_TYPE_SYS) {
+		// Inform
+
+		size_t sys_dsz = 0;
+		uint8_t* sys_d = funcs.notify_use_sys_file(&sys_dsz, &md, &pt, size, PBFS_PERM_READ);
+		if (sys_d && sys_dsz > 0) {
+			*read_bytes = sys_dsz > size ? size : sys_dsz;
+			memcpy(buffer, sys_d, *read_bytes);
+			funcs.free(sys_d);
+			
+			return PBFS_RES_SUCCESS;
+		} else if (sys_d && sys_dsz < 1) {
+			return (int)*(enum PBFS_Result*)sys_d;
+		}
+	}
+    
+	uint64_t md_base_data_size = uint128_to_u64(md.data_size);
+    if (uint128_to_u64(md.data_lba) <= PBFS_HDR_START_LBA || md_base_data_size < 1) return PBFS_ERR_Invalid_File_Or_Directory;
+
+    uint8_t* data = (uint8_t*)buffer;
+	uint64_t to_read_bytes = md_base_data_size > size ? size : md_base_data_size;
+
+    out = pbfs_read(mnt, md.data_lba, to_read_bytes, data);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+	data += to_read_bytes;
+	*read_bytes += to_read_bytes;
+
+	PBFS_Metadata md_t = md;
+    while (!uint128_is_zero(&md_t.extender.next_lba) && *read_bytes < size) {
+        out = pbfs_read(mnt, md_t.extender.next_lba, sizeof(PBFS_Metadata), &md_t);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+		uint64_t extent = uint128_to_u64(md_t.data_size);
+		if (uint128_to_u64(md_t.data_lba) <= PBFS_HDR_START_LBA || extent < 1) return PBFS_ERR_Invalid_File_Or_Directory;
+
+		size_t remaining = size - *read_bytes;
+		size_t md_t_data_size = extent > remaining ? remaining : (size_t)extent;
+		
+        out = pbfs_read(mnt, md_t.data_lba, md_t_data_size, data);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+		data += md_t_data_size;
+		*read_bytes += md_t_data_size;
+    }
+
+	return PBFS_RES_SUCCESS;
+}
+
+int pbfs_get_file_size(struct pbfs_mount* mnt, char* path, size_t* out_size) {
+	if (!mnt || !path || !out_size) return PBFS_ERR_Argument_Invalid;
+	if (strlen(path) < 1) return PBFS_ERR_Invalid_Path;
+	if (!mnt->active) return PBFS_ERR_Mount_Inactive;
+
+	PBFS_Metadata md = {0};
+	PBFS_Permission_Table pt = {0};
+    PBFS_DMM_Entry e = {0};
+    uint64_t e_lba = 0;
+    int out = find_dmm_entry(mnt, path, &e, &md, &pt, &e_lba, false);
+    if (out != PBFS_RES_SUCCESS) return out;
+
+	uint64_t md_data_size = uint128_to_u64(md.data_size);
     if (uint128_to_u64(md.data_lba) <= PBFS_HDR_START_LBA || md_data_size < 1) return PBFS_ERR_Invalid_File_Or_Directory;
 
 	PBFS_Metadata md_t = md;
@@ -1762,65 +1868,24 @@ int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_
 		if (uint128_to_u64(md_t.data_lba) <= PBFS_HDR_START_LBA || uint128_to_u64(md_t.data_size) < 1) return PBFS_ERR_Invalid_File_Or_Directory;
         md_data_size += uint128_to_u64(md_t.data_size);
 	}
-    
-    uint8_t* data = funcs.malloc(md_data_size);
-    if (!data) return PBFS_ERR_Allocation_Failed;
 
-    out = pbfs_read(mnt, md.data_lba, uint128_to_u64(md.data_size), data);
-    if (out != PBFS_RES_SUCCESS) return out;
-    
-	md_t = md;
-	uint64_t cOff = uint128_to_u64(md.data_size);
-    while (!uint128_is_zero(&md_t.extender.next_lba)) {
-        out = pbfs_read(mnt, md_t.extender.next_lba, sizeof(PBFS_Metadata), &md_t);
-        if (out != PBFS_RES_SUCCESS) return out;
-
-        out = pbfs_read(mnt, md_t.data_lba, uint128_to_u64(md_t.data_size), data + cOff);
-        if (out != PBFS_RES_SUCCESS) return out;
-
-		cOff += uint128_to_u64(md_t.data_size);
-    }
-
-	*data_size = md_data_size;
-    *data_out = data;
-    return PBFS_RES_SUCCESS;
+	*out_size = (size_t)md_data_size;
+	return PBFS_RES_SUCCESS;
 }
 
-int pbfs_read_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, uint8_t** data_out, size_t* data_size) {
-	if (!mnt || !data_out || !data_size || !entry) return PBFS_ERR_Argument_Invalid;
+int pbfs_get_file_dmm_size(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, size_t* out_size) {
+	if (!mnt || !entry || !out_size) return PBFS_ERR_Argument_Invalid;
+	if (!mnt->active) return PBFS_ERR_Mount_Inactive;
 
-    if (!mnt->active) return PBFS_ERR_Mount_Inactive;
-
-	lock_spinlock(&pbfs_funcs_lock);
-	bool finitialized = funcs.initialized;
-	unlock_spinlock(&pbfs_funcs_lock);
-	if (!finitialized) return PBFS_ERR_Not_Initialized;
-    
-    PBFS_Metadata md = {0};
-	PBFS_Permission_Table pt = {0};
-    int out = pbfs_get_metadata(mnt, entry, &md, &pt);
+	PBFS_Metadata md = {0};
+    int out = pbfs_get_metadata(mnt, entry, &md, NULL);
     if (out != PBFS_RES_SUCCESS) return out;
-	
-	if (!check_permissions(mnt, &md, &pt, PBFS_PERM_READ, false)) return PBFS_ERR_Wrong_Permissions;
-	if (md.type == PBFS_METADATA_TYPE_SYS) {
-		// Inform
 
-		size_t sys_dsz = 0;
-		uint8_t* sys_d = funcs.notify_use_sys_file(&sys_dsz, &md, &pt, PBFS_PERM_READ);
-		if (sys_d && sys_dsz > 0) {
-			*data_out = sys_d;
-			*data_size = sys_dsz;
-			return PBFS_RES_SUCCESS;
-		} else if (sys_d && sys_dsz < 1) {
-			return (int)*(enum PBFS_Result*)sys_d;
-		}
-	}
-    
-    uint64_t md_data_size = uint128_to_u64(md.data_size);
+	uint64_t md_data_size = uint128_to_u64(md.data_size);
     if (uint128_to_u64(md.data_lba) <= PBFS_HDR_START_LBA || md_data_size < 1) return PBFS_ERR_Invalid_File_Or_Directory;
 
 	PBFS_Metadata md_t = md;
-	while (!uint128_is_zero(&md.extender.next_lba)) {
+	while (!uint128_is_zero(&md_t.extender.next_lba)) {
         out = pbfs_read(mnt, md_t.extender.next_lba, sizeof(PBFS_Metadata), &md_t);
         if (out != PBFS_RES_SUCCESS) return out;
 
@@ -1828,27 +1893,8 @@ int pbfs_read_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, uint8_t** 
         md_data_size += uint128_to_u64(md_t.data_size);
 	}
 
-    uint8_t* data = funcs.malloc(md_data_size);
-    if (!data) return PBFS_ERR_Allocation_Failed;
-
-    out = pbfs_read(mnt, md.data_lba, uint128_to_u64(md.data_size), data);
-    if (out != PBFS_RES_SUCCESS) return out;
-    
-	md_t = md;
-	uint64_t cOff = uint128_to_u64(md.data_size);
-    while (!uint128_is_zero(&md_t.extender.next_lba)) {
-        out = pbfs_read(mnt, md_t.extender.next_lba, sizeof(PBFS_Metadata), &md_t);
-        if (out != PBFS_RES_SUCCESS) return out;
-
-        out = pbfs_read(mnt, md_t.data_lba, uint128_to_u64(md_t.data_size), data + cOff);
-        if (out != PBFS_RES_SUCCESS) return out;
-
-		cOff += uint128_to_u64(md_t.data_size);
-    }
-
-	*data_size = md_data_size;
-    *data_out = data;
-    return PBFS_RES_SUCCESS;
+	*out_size = (size_t)md_data_size;
+	return PBFS_RES_SUCCESS;
 }
 
 int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path) {
@@ -1871,13 +1917,25 @@ int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path) {
 
 	if (!check_permissions(mnt, &md, &pt, PBFS_PERM_READ, false)) return PBFS_ERR_Wrong_Permissions;
 
-    uint8_t* data = NULL;
+    uint64_t md_data_size = uint128_to_u64(md.data_size);
+    if (uint128_to_u64(md.data_lba) <= PBFS_HDR_START_LBA || md_data_size < 1) return PBFS_ERR_Invalid_File_Or_Directory;
+
+	PBFS_Metadata md_t = md;
+	while (!uint128_is_zero(&md_t.extender.next_lba)) {
+        out = pbfs_read(mnt, md_t.extender.next_lba, sizeof(PBFS_Metadata), &md_t);
+        if (out != PBFS_RES_SUCCESS) return out;
+
+		if (uint128_to_u64(md_t.data_lba) <= PBFS_HDR_START_LBA || uint128_to_u64(md_t.data_size) < 1) return PBFS_ERR_Invalid_File_Or_Directory;
+        md_data_size += uint128_to_u64(md_t.data_size);
+	}
+
+    uint8_t* data = funcs.malloc(md_data_size);
+	if (!data) return PBFS_ERR_Allocation_Failed;
     size_t data_size = 0;
-    out = pbfs_read_file_dmm(mnt, &e, &data, &data_size);
+
+    out = pbfs_read_file_dmm(mnt, &e, &data, md_data_size, &data_size);
     if (out != PBFS_RES_SUCCESS) {
-        if (data_size > 0 || data != NULL) {
-			funcs.free(data);
-		}
+        funcs.free(data);
         return out;
     }
 

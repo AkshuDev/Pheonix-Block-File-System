@@ -40,10 +40,11 @@ struct pbfs_funcs {
 			2. The return value for Remove Operation (if present, and `out_data_size` > 0) is discarded and used as cancellation of the operation with result being `*(enum PBFS_Result*)data`.
 			3. `PBFS_PERM_PROTECTED` as `usage` signifies Permission Change Operation.
 			4. The return value for Permission Change Operation (if present, and `out_data_size` > 0) will be used as a `PBFS_Permission_Flags[3]` containing 3 `PBFS_Permission_Flags` bitmasks, for user/group/external respectively.
-			5. The return value for Read Operation (if present, and `out_data_size` > 0) will be used as the read data.
+			5. The Read Operation will provide `reqested_size` (If its 0, it signifies there was no requested size). The return value for Read Operation (if present, and `out_data_size` > 0) will be used as the read data.
 			6. The return value for Write Operation (if present, and `out_data_size` > 0) will be used as the write data.
+			7. Only in the the Read Operation - if data is returned and `out_data_size` > 0, the data is assumed to be allocated, and will be freed.
 	*/
-	uint8_t* (*notify_use_sys_file)(size_t* out_data_size, PBFS_Metadata* md, PBFS_Permission_Table* pt, PBFS_Permission_Flags usage);
+	uint8_t* (*notify_use_sys_file)(size_t* out_data_size, PBFS_Metadata* md, PBFS_Permission_Table* pt, size_t requested_size, PBFS_Permission_Flags usage);
 };
 
 struct block_device {
@@ -138,8 +139,10 @@ int pbfs_update_file(struct pbfs_mount* mnt, char* path, uint8_t* data, size_t d
 int pbfs_update_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, uint8_t* data, size_t data_size); // Update a file using DMM Entry for quick access, from Mounted File System with new data
 int pbfs_change_permissions(struct pbfs_mount* mnt, char* path, PBFS_Permission_Flags new_permissions, PBFS_Permission_Flags new_gpermissions, PBFS_Permission_Flags new_epermissions); // Change permissions of a directory/file from Mounted File System
 int pbfs_change_permissions_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, PBFS_Permission_Flags new_permissions); // Change permissions of a directory/file using DMM Entry for quick access, from Mounted File System
-int pbfs_read_file(struct pbfs_mount* mnt, char* path, uint8_t** data_out, size_t* data_size); // Read a file from Mounted File System
-int pbfs_read_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, uint8_t** data_out, size_t* data_size); // Read a file using DMM Entry for quick access, from Mounted File System
+int pbfs_get_file_size(struct pbfs_mount* mnt, char* path, size_t* out_size); // Returns the size of a file
+int pbfs_get_file_dmm_size(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, size_t* out_size); // Returns the size of a file using DMM Entry
+int pbfs_read_file(struct pbfs_mount* mnt, char* path, void* buffer, size_t size, size_t* read_bytes); // Read a file from Mounted File System, returns the bytes read in `read_bytes`
+int pbfs_read_file_dmm(struct pbfs_mount* mnt, PBFS_DMM_Entry* entry, void* buffer, size_t size, size_t* read_bytes); // Read a file using DMM Entry for quick access,  returns the bytes read in `read_bytes`
 int pbfs_copy(struct pbfs_mount* mnt, char* path, char* new_path); // Copy a diectory/file from Mounted File System to another place
 int pbfs_move(struct pbfs_mount* mnt, char* path, char* new_path); // Move a directory/file from Mounted File System to another place
 int pbfs_rename(struct pbfs_mount* mnt, char* path, char* new_path); // Rename a directory/file from Mounted File System
